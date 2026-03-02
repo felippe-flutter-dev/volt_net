@@ -6,15 +6,9 @@ on:
   pull_request:
     branches: [ "main", "staging" ]
 
-# Permissões necessárias para o Trusted Publishing no pub.dev
-permissions:
-  id-token: write # Obrigatório para autenticação OIDC
-  contents: write # Para permitir tags automáticas se desejar
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    
     steps:
       - uses: actions/checkout@v4
 
@@ -39,24 +33,25 @@ jobs:
       - name: Run Tests
         run: flutter test --coverage
 
-      - name: Verify Pub Publishing
-        run: dart pub publish --dry-run
-
-  # Job de deploy: Só roda na main após o sucesso do job 'build'
   deploy:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    
+    # Permissões CRÍTICAS para o OIDC funcionar
+    permissions:
+      id-token: write
+      contents: read
+
     steps:
       - uses: actions/checkout@v4
       
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
+      # Usa a Action oficial do Dart para o setup do publishing
+      - uses: dart-lang/setup-dart@v1
 
       - name: Install Dependencies
-        run: flutter pub get
+        run: dart pub get
 
-      # Publicação automática no pub.dev via Trusted Publishing
+      # Agora o comando vai reconhecer o token de identidade do GitHub
       - name: Publish to pub.dev
         run: dart pub publish --force
