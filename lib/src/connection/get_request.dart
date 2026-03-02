@@ -34,8 +34,9 @@ class GetRequest<T extends BaseApiUrlConfig> {
     final uri = Uri.parse(cleanBaseUrl + cleanEndpoint).replace(
       queryParameters: queryParameters?.map((key, value) {
         // Converte listas para o formato que APIs como MangaDex esperam (ex: lang[]=pt)
-        if (value is Iterable){
-          return MapEntry(key, value.map((e) => e.toString()).toList());}
+        if (value is Iterable) {
+          return MapEntry(key, value.map((e) => e.toString()).toList());
+        }
         return MapEntry(key, value.toString());
       }),
     );
