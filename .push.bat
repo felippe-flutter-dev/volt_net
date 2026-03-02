@@ -1,68 +1,84 @@
 @echo off
 setlocal enabledelayedexpansion
 
-echo --------------------------------------
-echo [1/5] Limpando e formatando o codigo...
+echo ======================================
+echo       VOLT-NET PUSH PIPELINE
+echo ======================================
+
+echo [1/5] Cleaning and formatting...
 call dart fix --apply
 call dart format .
 
-echo --------------------------------------
-echo [2/5] Rodando linter (flutter analyze)...
+echo [2/5] Running linter (analyze)...
 call flutter analyze
 if %errorlevel% neq 0 (
-    echo.
-    echo [ERRO] O linter encontrou problemas. Corrija-os antes de subir.
+    echo [ERRO] Linter failed. Fix the issues before pushing.
     pause
     exit /b 1
 )
 
-echo --------------------------------------
-echo [3/5] Rodando testes automatizados (flutter test)...
+echo [3/5] Running tests...
 call flutter test
 if %errorlevel% neq 0 (
-    echo.
-    echo [ERRO] Falha na execucao dos testes. O processo foi abortado.
+    echo [ERRO] Tests failed. Process aborted.
     pause
     exit /b 1
 )
 
-:: Pega o nome da branch atual
+:: Pega a branch atual
 for /f "tokens=*" %%i in ('git rev-parse --abbrev-ref HEAD') do set BRANCH=%%i
+echo.
+echo Current branch: !BRANCH!
 
+:: PERGUNTA 1: MENSAGEM DO COMMIT
 echo --------------------------------------
-echo Branch atual: !BRANCH!
-set /p MESSAGE="Digite a mensagem do commit: "
+set /p MESSAGE="Enter commit message: "
 
-:: Se a mensagem for vazia, cancela
 if "!MESSAGE!"=="" (
-    echo [ERRO] A mensagem de commit nao pode ser vazia.
+    echo [ERRO] Commit message cannot be empty.
     pause
     exit /b 1
 )
 
+:: PERGUNTA 2: TIPO DE VERSAO
+echo.
 echo --------------------------------------
-echo [4/5] Preparando commit...
+echo Select versioning type:
+echo [1] feat     (New feature -> Minor bump)
+echo [2] breaking (Major change -> Major bump)
+echo [3] fix      (Patch/Other  -> Patch bump)
+echo --------------------------------------
+set /p CHOICE="Choose [1, 2 or 3]: "
 
-:: Adiciona tudo
+if "!CHOICE!"=="1" (
+    set FINAL_MSG=feat: !MESSAGE!
+) else if "!CHOICE!"=="2" (
+    set FINAL_MSG=BREAKING CHANGE: !MESSAGE!
+) else (
+    set FINAL_MSG=fix: !MESSAGE!
+)
+
+echo.
+echo [4/5] Committing: "!FINAL_MSG!"
 git add .
+git commit -m "!FINAL_MSG!"
 
-:: Tenta commitar. Se nao houver mudanças, o git avisa.
-git commit -m "!MESSAGE!"
 if %errorlevel% neq 0 (
-    echo [AVISO] Nada para commitar ou erro no commit.
+    echo [AVISO] Nothing to commit.
     pause
     exit /b 0
 )
 
-echo --------------------------------------
-echo [5/5] Enviando para o GitHub (origin !BRANCH!)...
+echo [5/5] Pushing to origin !BRANCH!...
 git push origin !BRANCH!
 
 if %errorlevel% neq 0 (
-    echo [ERRO] Falha ao enviar para o GitHub. Verifique sua conexao ou conflitos.
+    echo [ERRO] Push failed. Check your connection or conflicts.
 ) else (
-    echo --------------------------------------
-    echo [SUCESSO] Pipeline finalizada para !BRANCH!.
+    echo ======================================
+    echo [SUCCESS] Pipeline finished!
+    echo Version will be updated automatically on pub.dev.
+    echo ======================================
 )
 
 pause
