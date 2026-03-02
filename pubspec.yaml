@@ -1,0 +1,25 @@
+name: volt_net
+description: Motor de requisições HTTP de alta performance com Cache Híbrido (L1/L2), SQLite e Processamento em Isolates.
+version: 1.0.0
+
+repository: https://github.com/felippe-flutter-dev/volt_net
+homepage: https://github.com/felippe-flutter-dev/volt_net
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.1.0
+  sqflite: ^2.3.0
+  path: ^1.9.0
+  json_annotation: ^4.8.1
+  mocktail: ^1.0.4
+  connectivity_plus: ^6.0.0
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
+  sqflite_common_ffi: ^2.3.0
