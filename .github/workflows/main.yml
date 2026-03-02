@@ -51,7 +51,7 @@ jobs:
           export PATH="$PATH":"$HOME/.pub-cache/bin"
           COMMIT_MSG=$(git log -1 --pretty=%B)
           
-          # 1. Decide o nível e o tipo de log (Cider exige subcomandos: added, fixed, changed, etc)
+          # 1. Decide o nível e o tipo de log
           if [[ "$COMMIT_MSG" == *"feat:"* ]]; then
             LEVEL="minor"
             CIDER_CMD="added"
@@ -70,10 +70,17 @@ jobs:
           cider bump $LEVEL
           NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
           
-          # 3. Atualiza o CHANGELOG.md usando o subcomando correto
-          # Removemos o prefixo (ex: feat:) da mensagem para o log ficar limpo
+          # 3. Prepara o CHANGELOG.md: se não existir [Unreleased], cria um
+          if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
+            sed -i 's/## /## [Unreleased]\n\n## /' CHANGELOG.md
+          fi
+          
+          # 4. Adiciona o log no Unreleased
           CLEAN_MSG=$(echo "$COMMIT_MSG" | sed 's/^[a-z]*: //i')
           cider log $CIDER_CMD "$CLEAN_MSG"
+          
+          # 5. Promove o Unreleased para a nova versão
+          cider release
           
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
