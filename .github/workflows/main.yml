@@ -51,22 +51,29 @@ jobs:
           export PATH="$PATH":"$HOME/.pub-cache/bin"
           COMMIT_MSG=$(git log -1 --pretty=%B)
           
-          # 1. Decide o nível (Major, Minor ou Patch)
+          # 1. Decide o nível e o tipo de log (Cider exige subcomandos: added, fixed, changed, etc)
           if [[ "$COMMIT_MSG" == *"feat:"* ]]; then
             LEVEL="minor"
+            CIDER_CMD="added"
           elif [[ "$COMMIT_MSG" == *"BREAKING CHANGE"* ]]; then
             LEVEL="major"
+            CIDER_CMD="changed"
+          elif [[ "$COMMIT_MSG" == *"fix:"* ]]; then
+            LEVEL="patch"
+            CIDER_CMD="fixed"
           else
             LEVEL="patch"
+            CIDER_CMD="changed"
           fi
           
           # 2. Aumenta a versão no pubspec.yaml
           cider bump $LEVEL
           NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
           
-          # 3. Atualiza o CHANGELOG.md (Obrigatório para o Pub.dev)
-          # Se não houver seção para a nova versão, o cider a cria
-          cider log "Release version $NEW_VERSION: $COMMIT_MSG"
+          # 3. Atualiza o CHANGELOG.md usando o subcomando correto
+          # Removemos o prefixo (ex: feat:) da mensagem para o log ficar limpo
+          CLEAN_MSG=$(echo "$COMMIT_MSG" | sed 's/^[a-z]*: //i')
+          cider log $CIDER_CMD "$CLEAN_MSG"
           
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
