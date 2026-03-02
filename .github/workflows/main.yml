@@ -2,9 +2,13 @@ name: VoltNet CI/CD
 
 on:
   push:
-    branches: [ "main", "staging" ]
+    branches: [ "main" ]
   pull_request:
     branches: [ "main", "staging" ]
+
+permissions:
+  id-token: write
+  contents: write # Necessário para o commit automático da versão
 
 jobs:
   build:
@@ -33,29 +37,56 @@ jobs:
       - name: Run Tests
         run: flutter test --coverage
 
-  deploy:
+  # Job que decide a versão, atualiza o pubspec e publica
+  release:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    
-    permissions:
-      id-token: write
-      contents: read
-
     steps:
       - uses: actions/checkout@v4
-      
-      # 1. Instala o Flutter (Obrigatório pois o pacote depende do SDK do Flutter)
+        with:
+          fetch-depth: 0 # Necessário para analisar o histórico de commits
+
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
 
-      # 2. Configura o Dart SDK oficial para habilitar o OIDC (Handshake com pub.dev)
+      - name: Install Cider
+        run: dart pub global activate cider
+
+      # Lógica de Versionamento Automático baseada em commits
+      # Se a mensagem do commit contiver "feat:", aumenta Minor. 
+      # Se contiver "fix:", aumenta Patch. Senão, aumenta Patch por padrão.
+      - name: Auto Version Bump
+        run: |
+          export PATH="$PATH":"$HOME/.pub-cache/bin"
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          
+          if [[ "$COMMIT_MSG" == *"feat:"* ]]; then
+            cider bump minor
+          elif [[ "$COMMIT_MSG" == *"BREAKING CHANGE"* ]]; then
+            cider bump major
+          else
+            cider bump patch
+          fi
+          
+          # Atualiza o log do Cider (opcional, mas bom para o changelog)
+          # cider log "Automatic release for: $COMMIT_MSG"
+
+      # Salva a nova versão no repositório (Commit & Push)
+      - name: Commit version bump
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
+          git add pubspec.yaml
+          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
+          git push
+
       - uses: dart-lang/setup-dart@v1
 
       - name: Install Dependencies
         run: flutter pub get
 
-      # 3. Publica usando o Flutter Pub (necessário para resolver dependências de SDK)
       - name: Publish to pub.dev
         run: flutter pub publish --force
