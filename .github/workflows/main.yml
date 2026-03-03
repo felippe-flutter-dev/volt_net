@@ -1,18 +1,19 @@
 name: VoltNet CI/CD
 
 on:
+  pull_request:
+    branches: [ "main" ]
+    types: [ "closed" ]
   push:
     branches: [ "main" ]
-    tags: [ "v*" ] # Gatilho para publicação
-  pull_request:
-    branches: [ "main", "staging" ]
+    tags: [ "v*" ] # Mantemos para quando você criar tags manuais
 
 permissions:
   id-token: write
   contents: write
+  pull-requests: read
 
 jobs:
-  # JOB 1: Validação (Roda sempre)
   test:
     runs-on: ubuntu-latest
     steps:
@@ -33,11 +34,13 @@ jobs:
       - name: Run Tests
         run: flutter test --coverage
 
-  # JOB 2: Versionamento e Criação de Tag (Roda no Push para Main)
   release:
     needs: test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Só roda se o PR foi MERGEADO ou se foi um PUSH direto na main (e não for uma tag)
+    if: ((github.event.pull_request.merged == true) || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && !startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    outputs:
+      new_tag: v${{ env.NEW_VERSION }} # Exporta a tag para o próximo job
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,18 +53,21 @@ jobs:
         run: |
           export PATH="$PATH":"$HOME/.pub-cache/bin"
           
-          # 1. Pega o Assunto (%s) e o Corpo (%b) do commit separadamente
-          COMMIT_SUBJECT=$(git log -1 --pretty=%s)
-          COMMIT_BODY=$(git log -1 --pretty=%b)
-          
-          # 2. Decide o nível e o tipo de log baseado no ASSUNTO
-          if [[ "$COMMIT_SUBJECT" == *"feat:"* ]]; then
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            TITLE="${{ github.event.pull_request.title }}"
+            BODY="${{ github.event.pull_request.body }}"
+          else
+            TITLE=$(git log -1 --pretty=%s)
+            BODY=$(git log -1 --pretty=%b)
+          fi
+
+          if [[ "$TITLE" == *"feat:"* ]]; then
             LEVEL="minor"
             CIDER_CMD="added"
-          elif [[ "$COMMIT_SUBJECT" == *"BREAKING CHANGE"* ]]; then
+          elif [[ "$TITLE" == *"BREAKING CHANGE"* ]]; then
             LEVEL="major"
             CIDER_CMD="changed"
-          elif [[ "$COMMIT_SUBJECT" == *"fix:"* ]]; then
+          elif [[ "$TITLE" == *"fix:"* ]]; then
             LEVEL="patch"
             CIDER_CMD="fixed"
           else
@@ -69,28 +75,24 @@ jobs:
             CIDER_CMD="changed"
           fi
           
-          # 3. Aumenta a versão no pubspec.yaml
           cider bump $LEVEL
           NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
           
-          # 4. Prepara o CHANGELOG.md
           if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
             sed -i 's/## /## [Unreleased]\n\n## /' CHANGELOG.md
           fi
           
-          # 5. Adiciona o log: Usa o CORPO se existir, senão usa o ASSUNTO (limpo)
-          if [ -z "$COMMIT_BODY" ]; then
-            CLEAN_MSG=$(echo "$COMMIT_SUBJECT" | sed 's/^[a-z]*: //i')
+          if [ -z "$BODY" ]; then
+            CLEAN_MSG=$(echo "$TITLE" | sed 's/^[a-z]*: //i')
             cider log $CIDER_CMD "$CLEAN_MSG"
           else
-            # Usa o corpo completo para o log
-            cider log $CIDER_CMD "$COMMIT_BODY"
+            echo "$BODY" > commit_body.txt
+            cider log $CIDER_CMD "$(cat commit_body.txt)"
           fi
           
-          # 6. Promove o Unreleased para a nova versão
           cider release
-          
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
 
       - name: Commit & Tag
         run: |
@@ -102,13 +104,17 @@ jobs:
           git push origin main
           git push origin v${{ env.NEW_VERSION }}
 
-  # JOB 3: Publicação Real (Roda apenas quando uma TAG v* é detectada)
   publish:
-    needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, release]
+    # Roda se o release criou uma tag OU se o gatilho original foi uma tag manual
+    if: always() && (needs.release.result == 'success' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Se veio do release, precisamos pegar o commit com a tag nova
+          ref: ${{ needs.release.outputs.new_tag || github.ref }}
+      
       - uses: subosito/flutter-action@v2
       - uses: dart-lang/setup-dart@v1
       - name: Install Dependencies

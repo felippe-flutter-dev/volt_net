@@ -1,8 +1,7 @@
 # Changelog
-
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## \[Unreleased\]
 ### Added
 - **Full REST Support**: `SyncQueueManager` now supports `PUT` and `DELETE` requests in the offline sync queue.
 - **Dependency Injection (DI)**: Refactored `CacheManager` and `SyncQueueManager` to support constructor-based dependency injection for better testability.
@@ -18,10 +17,14 @@ All notable changes to this project will be documented in this file.
 - Compilation errors in `CacheManager.clearAll` method.
 - Improved Isolate parsing reliability.
 
-## [1.0.2] - 2026-03-02
+## \[1.0.2\] - 2026-03-02
 ### Fixed
 - Automated versioning pipeline fixes and Cider integration.
 
-## [1.0.1] - 2026-03-02
+## \[1.0.1\] - 2026-03-02
 ### Added
 - Initial stable release with Hybrid Cache (L1/L2), Isolates, and Offline-First engine.
+
+## 1.1.0 - 2026-03-03
+### Added
+- feat: implement Randal Schwartz refinements
