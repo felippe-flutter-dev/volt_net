@@ -33,52 +33,53 @@ echo.
 echo Working on branch: [!BRANCH!]
 
 echo ============================================================
-echo 1. COMMIT MESSAGE
+echo 1. COMMIT SUBJECT (Short Summary)
 echo ============================================================
-set /p MESSAGE="Describe your changes: "
+set /p MESSAGE="Summary: "
 
 if "!MESSAGE!"=="" (
-    echo [ERROR] Message is required.
+    echo [ERROR] Summary is required.
     pause
     exit /b 1
 )
 
 echo.
 echo ============================================================
-echo 2. VERSIONING STRATEGY (Semantic Versioning)
+echo 2. EXTENDED DESCRIPTION (Optional - For the Robot/Changelog)
 echo ============================================================
-echo  [1] FEATURE (feat)      -> Use for NEW functionalities.
-echo                             Increments MINOR (ex: 1.0.0 to 1.1.0)
+set /p DESC="Details (press Enter to skip): "
+
 echo.
-echo  [2] BREAKING (major)    -> Use for INCOMPATIBLE changes.
-echo                             Increments MAJOR (ex: 1.0.0 to 2.0.0)
-echo.
-echo  [3] BUG FIX / OTHER     -> Use for fixes, docs, or refactors.
-echo                             Increments PATCH (ex: 1.0.0 to 1.0.1)
 echo ============================================================
-echo.
-set /p CHOICE="Select the level of change [1, 2 or 3] (Default is 3): "
+echo 3. VERSIONING STRATEGY (Semantic Versioning)
+echo ============================================================
+echo  [1] FEATURE (feat)      -> New functionalities.
+echo  [2] BREAKING (major)    -> Incompatible changes.
+echo  [3] BUG FIX / OTHER     -> Fixes, docs, or refactors. [Default]
+echo ============================================================
+set /p CHOICE="Selection [1, 2 or 3]: "
 
 if "!CHOICE!"=="1" (
-    set FINAL_MSG=feat: !MESSAGE!
+    set FINAL_SUBJ=feat: !MESSAGE!
 ) else if "!CHOICE!"=="2" (
-    set FINAL_MSG=BREAKING CHANGE: !MESSAGE!
+    set FINAL_SUBJ=BREAKING CHANGE: !MESSAGE!
 ) else (
-    set FINAL_MSG=fix: !MESSAGE!
+    set FINAL_SUBJ=fix: !MESSAGE!
 )
 
 echo.
-echo ------------------------------------------------------------
-echo Summary: !FINAL_MSG!
-echo ------------------------------------------------------------
-echo.
-
 echo [4/5] Committing changes...
 git add .
-git commit -m "!FINAL_MSG!"
+
+:: Se houver descrição longa, faz commit com corpo
+if "!DESC!"=="" (
+    git commit -m "!FINAL_SUBJ!"
+) else (
+    git commit -m "!FINAL_SUBJ!" -m "!DESC!"
+)
 
 if %errorlevel% neq 0 (
-    echo [SKIP] No changes detected to commit.
+    echo [SKIP] No changes detected.
     pause
     exit /b 0
 )
@@ -88,12 +89,11 @@ git push origin !BRANCH!
 
 if %errorlevel% neq 0 (
     echo.
-    echo [ERROR] Push failed. Check your connection or git conflicts.
+    echo [ERROR] Push failed.
 ) else (
     echo.
     echo ============================================================
-    echo   SUCCESS: Pipeline completed for !BRANCH!
-    echo   The CI/CD will now handle the release on pub.dev.
+    echo   SUCCESS: Pipeline completed!
     echo ============================================================
 )
 
