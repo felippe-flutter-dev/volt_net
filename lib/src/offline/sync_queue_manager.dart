@@ -51,7 +51,7 @@ class SyncQueueManager {
       'headers': jsonEncode(headers),
       'created_at': DateTime.now().millisecondsSinceEpoch,
     });
-    debugPrint('VoltNet: Requisição salva na fila offline ($endpoint)');
+    debugPrint('VoltNet: Request saved to offline queue ($endpoint)');
   }
 
   /// Processa a fila de pendências
@@ -89,26 +89,35 @@ class SyncQueueManager {
           if (method == 'POST') {
             response = await client.post(uri,
                 headers: headers, body: jsonEncode(body));
+          } else if (method == 'PUT') {
+            response =
+                await client.put(uri, headers: headers, body: jsonEncode(body));
+          } else if (method == 'DELETE') {
+            response = await client.delete(uri,
+                headers: headers, body: jsonEncode(body));
           } else {
-            // Suporte futuro para PUT/DELETE
             continue;
           }
 
           if (response.statusCode >= 200 && response.statusCode < 300) {
             await db
                 .delete('offline_sync_queue', where: 'id = ?', whereArgs: [id]);
-            debugPrint('VoltNet: Sincronizado com sucesso ($endpoint)');
+            debugPrint('VoltNet: Sync success ($endpoint)');
           } else if (response.statusCode >= 400 && response.statusCode < 500) {
             // Erros do cliente (401, 404, etc) não devem ser retentados eternamente
             await db
                 .delete('offline_sync_queue', where: 'id = ?', whereArgs: [id]);
             debugPrint(
-                'VoltNet: Erro fatal no sync ($endpoint). Removido da fila.');
+                'VoltNet: Fatal error in sync ($endpoint). Removed from queue.');
           }
-        } catch (e) {
-          // Falha na tentativa de sync (ex: rede oscilou de novo), mantém na fila para a próxima
+        } on http.ClientException catch (e) {
           debugPrint(
-              'VoltNet: Falha ao sincronizar item $id. Retentando depois.');
+              'VoltNet: Network failure in sync for item $id: $e. Retrying later.');
+          break;
+        } catch (e) {
+          // Erro genérico (ex: falha no parse ou banco), mantém na fila para segurança
+          debugPrint(
+              'VoltNet: Unexpected error syncing item $id: $e. Retrying later.');
           break;
         }
       }

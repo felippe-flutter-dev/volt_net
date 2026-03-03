@@ -3,90 +3,115 @@ name: VoltNet CI/CD
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ] # Gatilho para publicação
   pull_request:
     branches: [ "main", "staging" ]
 
 permissions:
   id-token: write
-  contents: write # Necessário para o commit automático da versão
+  contents: write
 
 jobs:
-  build:
+  # JOB 1: Validação (Roda sempre)
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install SQLite3
         run: |
           sudo apt-get update -y
           sudo apt-get install -y libsqlite3-dev
-
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-
       - name: Install Dependencies
         run: flutter pub get
-
       - name: Verify Formatting
         run: dart format --output=none --set-exit-if-changed .
-
       - name: Analyze
         run: flutter analyze
-
       - name: Run Tests
         run: flutter test --coverage
 
-  # Job que decide a versão, atualiza o pubspec e publica
+  # JOB 2: Versionamento e Criação de Tag (Roda no Push para Main)
   release:
-    needs: build
+    needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Necessário para analisar o histórico de commits
-
+          fetch-depth: 0
       - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-
       - name: Install Cider
         run: dart pub global activate cider
-
-      # Lógica de Versionamento Automático baseada em commits
-      # Se a mensagem do commit contiver "feat:", aumenta Minor. 
-      # Se contiver "fix:", aumenta Patch. Senão, aumenta Patch por padrão.
-      - name: Auto Version Bump
+      
+      - name: Auto Version Bump & Changelog
         run: |
           export PATH="$PATH":"$HOME/.pub-cache/bin"
-          COMMIT_MSG=$(git log -1 --pretty=%B)
           
-          if [[ "$COMMIT_MSG" == *"feat:"* ]]; then
-            cider bump minor
-          elif [[ "$COMMIT_MSG" == *"BREAKING CHANGE"* ]]; then
-            cider bump major
+          # 1. Pega o Assunto (%s) e o Corpo (%b) do commit separadamente
+          COMMIT_SUBJECT=$(git log -1 --pretty=%s)
+          COMMIT_BODY=$(git log -1 --pretty=%b)
+          
+          # 2. Decide o nível e o tipo de log baseado no ASSUNTO
+          if [[ "$COMMIT_SUBJECT" == *"feat:"* ]]; then
+            LEVEL="minor"
+            CIDER_CMD="added"
+          elif [[ "$COMMIT_SUBJECT" == *"BREAKING CHANGE"* ]]; then
+            LEVEL="major"
+            CIDER_CMD="changed"
+          elif [[ "$COMMIT_SUBJECT" == *"fix:"* ]]; then
+            LEVEL="patch"
+            CIDER_CMD="fixed"
           else
-            cider bump patch
+            LEVEL="patch"
+            CIDER_CMD="changed"
           fi
           
-          # Atualiza o log do Cider (opcional, mas bom para o changelog)
-          # cider log "Automatic release for: $COMMIT_MSG"
+          # 3. Aumenta a versão no pubspec.yaml
+          cider bump $LEVEL
+          NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
+          
+          # 4. Prepara o CHANGELOG.md
+          if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
+            sed -i 's/## /## [Unreleased]\n\n## /' CHANGELOG.md
+          fi
+          
+          # 5. Adiciona o log: Usa o CORPO se existir, senão usa o ASSUNTO (limpo)
+          if [ -z "$COMMIT_BODY" ]; then
+            CLEAN_MSG=$(echo "$COMMIT_SUBJECT" | sed 's/^[a-z]*: //i')
+            cider log $CIDER_CMD "$CLEAN_MSG"
+          else
+            # Usa o corpo completo para o log
+            cider log $CIDER_CMD "$COMMIT_BODY"
+          fi
+          
+          # 6. Promove o Unreleased para a nova versão
+          cider release
+          
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
 
-      # Salva a nova versão no repositório (Commit & Push)
-      - name: Commit version bump
+      - name: Commit & Tag
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
-          git add pubspec.yaml
-          git commit -m "chore: bump version to $NEW_VERSION [skip ci]"
-          git push
+          git add pubspec.yaml CHANGELOG.md
+          git commit -m "chore: release v${{ env.NEW_VERSION }} [skip ci]"
+          git tag v${{ env.NEW_VERSION }}
+          git push origin main
+          git push origin v${{ env.NEW_VERSION }}
 
+  # JOB 3: Publicação Real (Roda apenas quando uma TAG v* é detectada)
+  publish:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
       - uses: dart-lang/setup-dart@v1
-
       - name: Install Dependencies
         run: flutter pub get
-
       - name: Publish to pub.dev
         run: flutter pub publish --force

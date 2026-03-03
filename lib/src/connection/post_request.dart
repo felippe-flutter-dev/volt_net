@@ -22,7 +22,7 @@ class PostRequest<T extends BaseApiUrlConfig> {
     Map<String, String>? personalizedHeader,
     String? personalizedToken,
   }) async {
-    final url = Uri.parse(apiConfig.resolveBaseUrl() + endpoint);
+    final url = Uri.parse(apiConfig.resolveBaseUrl()).resolve(endpoint);
     final headers = personalizedHeader ?? await apiConfig.getHeader();
 
     try {
@@ -62,26 +62,19 @@ class PostRequest<T extends BaseApiUrlConfig> {
       }
 
       return resultApi;
-    } catch (e) {
-      // TRATAMENTO OFF-LINE: Detecta falha de rede
-      final isNetworkError = e.toString().contains('SocketException') ||
-          e.toString().contains('ClientException') ||
-          e.toString().contains('HandshakeException');
-
-      if (isNetworkError && offlineSync && !isMultipart) {
-        // Salva na fila para sincronização automática posterior
+    } on http.ClientException {
+      if (offlineSync && !isMultipart) {
         await SyncQueueManager().enqueue(
           endpoint: url.toString(),
           method: 'POST',
           body: data,
           headers: headers,
         );
-
-        // Retorna um ResultApi "Vazio" mas marcado como pendente
         return ResultApi(isPending: true);
       }
-
-      debugPrint('VoltNet ERRO POST: $e');
+      rethrow;
+    } catch (e) {
+      debugPrint('VoltNet POST ERROR: $e');
       rethrow;
     }
   }
@@ -113,17 +106,17 @@ class PostRequest<T extends BaseApiUrlConfig> {
       return ResultModel<M>(result: resultApi);
     }
 
-    debugPrint("Log: Sucesso na API detectado.");
+    debugPrint("Log: API Success detected.");
 
     // 4. Se o corpo for nulo/vazio (ex: 204 No Content), retornamos sucesso SEM parse
     if (content == null) {
-      debugPrint("Log: Corpo vazio (null). Retornando sem processar Isolate.");
+      debugPrint("Log: Empty body (null). Returning without Isolate parse.");
       return ResultModel<M>(result: resultApi);
     }
 
     // 5. Se tem conteúdo, entramos no Try/Catch apenas para o processamento do Isolate
     try {
-      debugPrint("Log: Iniciando decode no Isolate com conteúdo.");
+      debugPrint("Log: Starting Isolate decode with content.");
       final model = await compute(
         decodeJsonInIsolate<M>,
         [content, parser],
@@ -131,10 +124,8 @@ class PostRequest<T extends BaseApiUrlConfig> {
 
       return ResultModel<M>(model: model, result: resultApi);
     } catch (e, s) {
-      debugPrint('Log Erro: Falha ao decodificar JSON: $e');
+      debugPrint('Log Error: Failed to decode JSON: $e');
       debugPrintStack(stackTrace: s);
-      // Se o JSON vier mal formado, retornamos o result com model nulo
-      // ou você pode dar rethrow se preferir que o app saiba da falha de parse
       rethrow;
     }
   }

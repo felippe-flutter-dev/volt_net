@@ -9,19 +9,24 @@ class CacheManager {
   static final Map<String, ResultApi> _memoryCache = {};
 
   // Instância do SQL Helper (L2)
-  static final SqlDatabaseHelper _dbHelper = SqlDatabaseHelper();
+  late final SqlDatabaseHelper _dbHelper;
+
+  CacheManager({SqlDatabaseHelper? dbHelper})
+      : _dbHelper = dbHelper ?? SqlDatabaseHelper();
 
   /// MÉTODO CRÍTICO: Deve ser chamado no main() do seu app:
   /// await CacheManager.init();
-  static Future<void> init() async {
+  static Future<void> init({SqlDatabaseHelper? dbHelper}) async {
+    final helper = dbHelper ?? SqlDatabaseHelper();
     // Inicializa o banco e limpa caches voláteis (marcados como memory no disco)
-    await _dbHelper.clearVolatileCache();
+    await helper.clearVolatileCache();
   }
 
   // Gera a chave única.
   String _generateKey(String token, String endpoint) {
-    // O token e endpoint garantem que o dado retornado seja específico para esse usuário e essa rota
-    return '${token.hashCode}_$endpoint';
+    // Usamos a string pura do token e endpoint para garantir determinismo na persistência.
+    // O Randal Schwartz sugeriu evitar .hashCode devido a instabilidade entre versões/runs.
+    return '${token}_$endpoint';
   }
 
   Future<ResultApi?> get({
@@ -115,8 +120,9 @@ class CacheManager {
     return await _dbHelper.getModels(tableName);
   }
 
-  static Future<void> clearAll() async {
+  static Future<void> clearAll({SqlDatabaseHelper? dbHelper}) async {
     _memoryCache.clear();
-    await _dbHelper.clearAll();
+    final helper = dbHelper ?? SqlDatabaseHelper();
+    await helper.clearAll();
   }
 }

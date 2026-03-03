@@ -97,7 +97,7 @@ class GetRequest<T extends BaseApiUrlConfig> {
 
     // Resolve a URL completa para a chave de cache
     final baseUrl = apiConfig.resolveBaseUrl();
-    final uri = Uri.parse(baseUrl + endpoint).replace(
+    final uri = Uri.parse(baseUrl).resolve(endpoint).replace(
         queryParameters:
             queryParameters?.map((k, v) => MapEntry(k, v.toString())));
     final fullUrl = uri.toString();
@@ -122,7 +122,7 @@ class GetRequest<T extends BaseApiUrlConfig> {
         }
       } catch (e) {
         shouldReadCacheInGet = false;
-        debugPrint('EcoloteNetwork: Cache corrompido para $fullUrl');
+        debugPrint('VoltNet: Corrupted cache for $fullUrl');
       }
     }
 
