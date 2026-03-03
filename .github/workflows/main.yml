@@ -49,16 +49,19 @@ jobs:
       - name: Auto Version Bump & Changelog
         run: |
           export PATH="$PATH":"$HOME/.pub-cache/bin"
-          COMMIT_MSG=$(git log -1 --pretty=%B)
           
-          # 1. Decide o nível e o tipo de log
-          if [[ "$COMMIT_MSG" == *"feat:"* ]]; then
+          # 1. Pega o Assunto (%s) e o Corpo (%b) do commit separadamente
+          COMMIT_SUBJECT=$(git log -1 --pretty=%s)
+          COMMIT_BODY=$(git log -1 --pretty=%b)
+          
+          # 2. Decide o nível e o tipo de log baseado no ASSUNTO
+          if [[ "$COMMIT_SUBJECT" == *"feat:"* ]]; then
             LEVEL="minor"
             CIDER_CMD="added"
-          elif [[ "$COMMIT_MSG" == *"BREAKING CHANGE"* ]]; then
+          elif [[ "$COMMIT_SUBJECT" == *"BREAKING CHANGE"* ]]; then
             LEVEL="major"
             CIDER_CMD="changed"
-          elif [[ "$COMMIT_MSG" == *"fix:"* ]]; then
+          elif [[ "$COMMIT_SUBJECT" == *"fix:"* ]]; then
             LEVEL="patch"
             CIDER_CMD="fixed"
           else
@@ -66,20 +69,25 @@ jobs:
             CIDER_CMD="changed"
           fi
           
-          # 2. Aumenta a versão no pubspec.yaml
+          # 3. Aumenta a versão no pubspec.yaml
           cider bump $LEVEL
           NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
           
-          # 3. Prepara o CHANGELOG.md: se não existir [Unreleased], cria um
+          # 4. Prepara o CHANGELOG.md
           if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
             sed -i 's/## /## [Unreleased]\n\n## /' CHANGELOG.md
           fi
           
-          # 4. Adiciona o log no Unreleased
-          CLEAN_MSG=$(echo "$COMMIT_MSG" | sed 's/^[a-z]*: //i')
-          cider log $CIDER_CMD "$CLEAN_MSG"
+          # 5. Adiciona o log: Usa o CORPO se existir, senão usa o ASSUNTO (limpo)
+          if [ -z "$COMMIT_BODY" ]; then
+            CLEAN_MSG=$(echo "$COMMIT_SUBJECT" | sed 's/^[a-z]*: //i')
+            cider log $CIDER_CMD "$CLEAN_MSG"
+          else
+            # Usa o corpo completo para o log
+            cider log $CIDER_CMD "$COMMIT_BODY"
+          fi
           
-          # 5. Promove o Unreleased para a nova versão
+          # 6. Promove o Unreleased para a nova versão
           cider release
           
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
