@@ -1,7 +1,7 @@
 # VoltNet 🚀
 
 [![Build Status](https://github.com/felippe-flutter-dev/volt_net/actions/workflows/main.yml/badge.svg)](https://github.com/felippe-flutter-dev/volt_net/actions)
-[![pub package](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://pub.dev/packages/volt_net)
+[![pub package](https://img.shields.io/badge/version-1.1.0-blue.svg)](https://pub.dev/packages/volt_net)
 [![Pub Points](https://img.shields.io/pub/points/volt_net?color=blue&label=pub%20points)](https://pub.dev/packages/volt_net/score)
 [![Coverage](https://img.shields.io/badge/coverage-92.7%25-green.svg)](https://github.com/felippe-flutter-dev/volt_net)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Profile-blue.svg)](https://www.linkedin.com/in/felippe-pinheiro-dev-flutter/)
