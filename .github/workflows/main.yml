@@ -1,4 +1,4 @@
-name: VoltNet CI/CD
+name: VoltNet CI & Versioning
 
 on:
   pull_request:
@@ -6,15 +6,14 @@ on:
     types: [ "closed" ]
   push:
     branches: [ "main" ]
-    tags: [ "v*" ] # Mantemos para quando você criar tags manuais
 
 permissions:
-  id-token: write
   contents: write
   pull-requests: read
 
 jobs:
   test:
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,11 +35,7 @@ jobs:
 
   release:
     needs: test
-    # Só roda se o PR foi MERGEADO ou se foi um PUSH direto na main (e não for uma tag)
-    if: ((github.event.pull_request.merged == true) || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && !startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    outputs:
-      new_tag: v${{ env.NEW_VERSION }} # Exporta a tag para o próximo job
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,7 +87,6 @@ jobs:
           
           cider release
           echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
 
       - name: Commit & Tag
         run: |
@@ -103,21 +97,3 @@ jobs:
           git tag v${{ env.NEW_VERSION }}
           git push origin main
           git push origin v${{ env.NEW_VERSION }}
-
-  publish:
-    needs: [test, release]
-    # Roda se o release criou uma tag OU se o gatilho original foi uma tag manual
-    if: always() && (needs.release.result == 'success' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # Se veio do release, precisamos pegar o commit com a tag nova
-          ref: ${{ needs.release.outputs.new_tag || github.ref }}
-      
-      - uses: subosito/flutter-action@v2
-      - uses: dart-lang/setup-dart@v1
-      - name: Install Dependencies
-        run: flutter pub get
-      - name: Publish to pub.dev
-        run: flutter pub publish --force
