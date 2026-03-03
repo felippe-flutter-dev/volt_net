@@ -3,12 +3,18 @@ All notable changes to this project will be documented in this file.
 
 ## \[Unreleased\]
 ## \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ### \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## Added
 - **Full REST Support**: `SyncQueueManager` now supports `PUT` and `DELETE` requests in the offline sync queue.
 - **Dependency Injection (DI)**: Refactored `CacheManager` and `SyncQueueManager` to support constructor-based dependency injection for better testability.
 
 ### \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## Changed
 - **Robust Cache Keys**: Replaced `.hashCode` with a deterministic, collision-resistant string-based key strategy.
 - **Typed Error Handling**: Replaced string-based error checking with proper type-based catch blocks (`http.ClientException`).
@@ -17,25 +23,41 @@ All notable changes to this project will be documented in this file.
 - **Reliable URL Building**: Integrated `Uri.resolve()` for absolute path construction, replacing error-prone manual concatenation.
 
 ### \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## Fixed
 - Compilation errors in `CacheManager.clearAll` method.
 - Improved Isolate parsing reliability.
 
 ## \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## \[1.0.2\] - 2026-03-02
 ### \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## Fixed
 - Automated versioning pipeline fixes and Cider integration.
 
 ## \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## \[1.0.1\] - 2026-03-02
 ### \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
 ## Added
 - Initial stable release with Hybrid Cache (L1/L2), Isolates, and Offline-First engine.
 
 ## \[Unreleased\]
+## \[Unreleased\]
+## \[Unreleased\]
+## 1.1.2 - 2026-03-03
+### Fixed
+- fix: adjust pipeline
+
 ## 1.1.1 - 2026-03-03
-### Changed
+### \[Unreleased\]
 - Pipeline in publish job adjustment
 
 ## 1.1.0 - 2026-03-03
