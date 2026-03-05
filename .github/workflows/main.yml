@@ -1,99 +1,17 @@
-name: VoltNet CI & Versioning
+name: CI - Quality Gate
 
 on:
   pull_request:
-    branches: [ "main" ]
-    types: [ "closed" ]
-  push:
-    branches: [ "main" ]
-
-permissions:
-  contents: write
-  pull-requests: read
+    branches: [ "main", "staging" ]
 
 jobs:
-  test:
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event.pull_request.merged == true)
+  test_and_lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install SQLite3
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libsqlite3-dev
       - uses: subosito/flutter-action@v2
-        with:
-          channel: 'stable'
-      - name: Install Dependencies
-        run: flutter pub get
-      - name: Verify Formatting
-        run: dart format --output=none --set-exit-if-changed .
-      - name: Analyze
-        run: flutter analyze
-      - name: Run Tests
-        run: flutter test --coverage
-
-  release:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: subosito/flutter-action@v2
-      - name: Install Cider
-        run: dart pub global activate cider
-      
-      - name: Auto Version Bump & Changelog
-        run: |
-          export PATH="$PATH":"$HOME/.pub-cache/bin"
-          
-          if [ "${{ github.event_name }}" == "pull_request" ]; then
-            TITLE="${{ github.event.pull_request.title }}"
-            BODY="${{ github.event.pull_request.body }}"
-          else
-            TITLE=$(git log -1 --pretty=%s)
-            BODY=$(git log -1 --pretty=%b)
-          fi
-
-          if [[ "$TITLE" == *"feat:"* ]]; then
-            LEVEL="minor"
-            CIDER_CMD="added"
-          elif [[ "$TITLE" == *"BREAKING CHANGE"* ]]; then
-            LEVEL="major"
-            CIDER_CMD="changed"
-          elif [[ "$TITLE" == *"fix:"* ]]; then
-            LEVEL="patch"
-            CIDER_CMD="fixed"
-          else
-            LEVEL="patch"
-            CIDER_CMD="changed"
-          fi
-          
-          cider bump $LEVEL
-          NEW_VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
-          
-          if ! grep -q "## \[Unreleased\]" CHANGELOG.md; then
-            sed -i 's/## /## [Unreleased]\n\n## /' CHANGELOG.md
-          fi
-          
-          if [ -z "$BODY" ]; then
-            CLEAN_MSG=$(echo "$TITLE" | sed 's/^[a-z]*: //i')
-            cider log $CIDER_CMD "$CLEAN_MSG"
-          else
-            echo "$BODY" > commit_body.txt
-            cider log $CIDER_CMD "$(cat commit_body.txt)"
-          fi
-          
-          cider release
-          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
-
-      - name: Commit & Tag
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add pubspec.yaml CHANGELOG.md
-          git commit -m "chore: release v${{ env.NEW_VERSION }} [skip ci]"
-          git tag v${{ env.NEW_VERSION }}
-          git push origin main
-          git push origin v${{ env.NEW_VERSION }}
+        with: { channel: 'stable' }
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed .
+      - run: flutter analyze
+      - run: flutter test --coverage

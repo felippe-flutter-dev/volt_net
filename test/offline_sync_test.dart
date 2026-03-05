@@ -8,13 +8,18 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class MockHttpClient extends Mock implements http.Client {}
 
-class FakeUri extends Fake implements Uri {}
+class FakeBaseRequest extends Fake implements http.BaseRequest {}
 
-class TestConfig extends BaseApiUrlConfig {
+class _TestApiConfig extends BaseApiUrlConfig {
   @override
-  String get baseUrl => 'https://api.messezap.com';
+  Future<String> getToken() async => 'teste';
   @override
-  Future<String> getToken() async => 'zap_token';
+  Future<Map<String, String>> getHeader() async => {
+        'Authorization': 'Bearer teste',
+        'Content-Type': 'application/json',
+      };
+  @override
+  String resolveBaseUrl() => 'https://www.testeurl.com';
 }
 
 void main() {
@@ -23,10 +28,12 @@ void main() {
 
   late PostRequest postRequest;
   late MockHttpClient mockClient;
+  late _TestApiConfig apiConfig;
 
   setUpAll(() async {
-    registerFallbackValue(FakeUri());
+    registerFallbackValue(FakeBaseRequest());
     SqlDatabaseHelper.databaseName = ':memory:';
+    apiConfig = _TestApiConfig();
     await SqlDatabaseHelper.reset();
   });
 
@@ -41,27 +48,21 @@ void main() {
     test(
         'Deve enfileirar mensagem quando houver erro de rede (SocketException)',
         () async {
-      final config = TestConfig();
       final messageData = {'text': 'Olá amigo!', 'to': 'user_b'};
 
-      // Simula um erro de rede (Sem internet)
-      when(() => mockClient.post(any(),
-              headers: any(named: 'headers'), body: any(named: 'body')))
-          .thenThrow(
-              http.ClientException('SocketException: Connection failed'));
+      when(() => mockClient.send(any())).thenThrow(
+          http.ClientException('SocketException: Connection failed'));
 
       final result = await postRequest.post(
-        config,
+        apiConfig,
         endpoint: '/send_message',
         data: messageData,
       );
 
-      // A lib não deve dar crash, mas sim retornar isPending
       expect(result.isPending, true);
 
-      // Verifica se o dado foi parar no banco SQL (fila offline)
       final db = await SqlDatabaseHelper().database;
-      final pending = await db.query('offline_sync_queue');
+      final pending = await db.query(SqlDatabaseHelper.syncTable);
 
       expect(pending.length, 1);
       final Map<String, dynamic> payload =
@@ -72,8 +73,8 @@ void main() {
     test('Deve sincronizar automaticamente a fila quando a internet voltar',
         () async {
       final syncManager = SyncQueueManager();
+      final mockSyncClient = MockHttpClient();
 
-      // 1. Inserir manualmente um item na fila
       await syncManager.enqueue(
         endpoint: 'https://api.messezap.com/send_message',
         method: 'POST',
@@ -81,25 +82,17 @@ void main() {
         headers: {'Auth': 'token'},
       );
 
-      // 2. Mockar o sucesso do servidor para o sync
-      // O sync manager usa o http.Client() interno, mas como estamos em teste unitário,
-      // ele usará as configurações do sqflite ffi.
-      // Nota: Em testes complexos injetaríamos o client no SyncManager,
-      // mas aqui vamos testar a lógica da fila.
+      when(() => mockSyncClient.send(any()))
+          .thenAnswer((_) async => http.StreamedResponse(
+                Stream.fromIterable([utf8.encode('{"ok":true}')]),
+                200,
+              ));
 
-      // Simulamos o processamento
-      await syncManager.syncPendingRequests();
-
-      // Verifica se a fila foi limpa (assumindo que o sync correu, mesmo com erro de rede real no teste,
-      // pois o SyncManager do teste unitário tentará bater na rede real se não for mockado).
-      // Para este teste, vamos apenas garantir que o enqueue e a leitura funcionam.
+      await syncManager.syncPendingRequests(httpClient: mockSyncClient);
 
       final db = await SqlDatabaseHelper().database;
-      final afterSync = await db.query('offline_sync_queue');
-
-      // Se não houver internet real no ambiente de teste, ele manterá na fila.
-      // O importante é que a lógica de "enfileirar" e "tentar ler" está ok.
-      expect(afterSync, isList);
+      final afterSync = await db.query(SqlDatabaseHelper.syncTable);
+      expect(afterSync.isEmpty, true);
     });
   });
 }
