@@ -7,13 +7,19 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class MockHttpClient extends Mock implements http.Client {}
 
-class FakeUri extends Fake implements Uri {}
+class FakeBaseRequest extends Fake implements http.BaseRequest {}
 
 class MangaDexConfig extends BaseApiUrlConfig {
   @override
-  String get baseUrl => 'https://api.mangadex.org';
-  @override
   Future<String> getToken() async => '';
+
+  @override
+  Future<Map<String, String>> getHeader() => Future.value({
+        'Content-Type': 'application/json',
+      });
+
+  @override
+  String resolveBaseUrl() => 'https://api.mangadex.org';
 }
 
 void main() {
@@ -25,7 +31,8 @@ void main() {
   late MockHttpClient mockClient;
 
   setUpAll(() async {
-    registerFallbackValue(FakeUri());
+    registerFallbackValue(FakeBaseRequest());
+    registerFallbackValue(Uri.parse('https://api.mangadex.org'));
     // Configura o banco de dados para rodar na RAM (Zero Locks, Alta velocidade)
     SqlDatabaseHelper.databaseName = ':memory:';
     await SqlDatabaseHelper.reset();
@@ -60,9 +67,11 @@ void main() {
         ]
       };
 
-      when(() => mockClient.get(any(), headers: any(named: 'headers')))
-          .thenAnswer(
-              (_) async => http.Response(jsonEncode(mockResponse), 200));
+      when(() => mockClient.send(any()))
+          .thenAnswer((_) async => http.StreamedResponse(
+                Stream.fromIterable([utf8.encode(jsonEncode(mockResponse))]),
+                200,
+              ));
 
       final params = {
         'limit': 1,
@@ -89,8 +98,7 @@ void main() {
       );
 
       expect(cachedResult.bodyAsString, result.bodyAsString);
-      verify(() => mockClient.get(any(), headers: any(named: 'headers')))
-          .called(1);
+      verify(() => mockClient.send(any())).called(1);
     });
 
     test('Deve lidar com download de bytes via cache', () async {
