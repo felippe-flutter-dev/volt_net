@@ -1,12 +1,14 @@
+/// Base configuration class for API URL management.
+///
+/// This class should be extended to provide specific API configurations,
+/// such as base URLs, headers, and authentication tokens.
 abstract class BaseApiUrlConfig {
-  String get baseUrl;
+  /// Returns the base URL for the API.
+  String resolveBaseUrl();
 
-  String resolveBaseUrl() => baseUrl;
+  /// Returns the headers to be included in the requests.
+  Future<Map<String, String>> getHeader();
 
+  /// Returns the authentication token, if any.
   Future<String> getToken();
-
-  Future<Map<String, String>> getHeader() async => {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer ${await getToken()}',
-      };
 }

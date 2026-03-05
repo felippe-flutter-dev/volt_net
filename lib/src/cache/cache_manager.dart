@@ -1,74 +1,97 @@
-import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:crypto/crypto.dart';
 import '../../volt_net.dart';
 
+/// Internal entry for the L1 (Memory) cache to track TTL.
+class _MemoryCacheEntry {
+  final ResultApi data;
+  final int createdAt;
+
+  _MemoryCacheEntry(this.data, this.createdAt);
+}
+
+/// [CacheManager] is the core engine for the Hybrid Cache architecture (L1/L2).
+///
+/// It manages an in-memory [Map] for lightning-fast access (L1) and a SQLite
+/// database for persistent storage (L2).
 class CacheManager {
-  // Limite de itens na memória RAM (L1) para evitar Memory Leak - Agora configurável
+  /// Maximum number of items allowed in the RAM cache ([L1]).
   static int maxMemoryItems = 100;
 
-  // Mantemos um Map estático para acesso instantâneo durante a sessão (L1)
-  static final Map<String, ResultApi> _memoryCache = {};
+  /// Internal L1 cache storage with TTL tracking.
+  /// Uses Map insertion order to implement LRU (Least Recently Used).
+  static final Map<String, _MemoryCacheEntry> _memoryCache = {};
 
-  // Instância do SQL Helper (L2)
+  /// Instance of [SqlDatabaseHelper] used for L2 (Disk) operations.
   late final SqlDatabaseHelper _dbHelper;
 
+  /// Creates a [CacheManager] instance.
   CacheManager({SqlDatabaseHelper? dbHelper})
       : _dbHelper = dbHelper ?? SqlDatabaseHelper();
 
-  /// MÉTODO CRÍTICO: Deve ser chamado no main() do seu app:
-  /// await CacheManager.init();
+  /// Initializes the caching system.
   static Future<void> init({SqlDatabaseHelper? dbHelper}) async {
     final helper = dbHelper ?? SqlDatabaseHelper();
-    // Inicializa o banco e limpa caches voláteis (marcados como memory no disco)
     await helper.clearVolatileCache();
   }
 
-  // Gera a chave única.
-  String _generateKey(String token, String endpoint) {
-    // Usamos a string pura do token e endpoint para garantir determinismo na persistência.
-    // O Randal Schwartz sugeriu evitar .hashCode devido a instabilidade entre versões/runs.
-    return '${token}_$endpoint';
+  /// Generates a secure SHA-256 hash to be used as a cache key.
+  /// Includes the [token] to ensure user isolation and privacy.
+  String _generateKey(String token, String endpoint, {String? cacheGroup}) {
+    final base = cacheGroup ?? endpoint;
+    final rawKey = '$token:$base';
+
+    final bytes = utf8.encode(rawKey);
+    final digest = sha256.convert(bytes);
+
+    return digest.toString();
   }
 
+  /// Retrieves a [ResultApi] from the cache.
   Future<ResultApi?> get({
     required CacheType? type,
     required String token,
     required String endpoint,
+    String? cacheGroup,
     Duration? ttl,
   }) async {
     if (type == null) return null;
 
-    final key = _generateKey(token, endpoint);
+    final key = _generateKey(token, endpoint, cacheGroup: cacheGroup);
+    final now = DateTime.now().millisecondsSinceEpoch;
 
-    // 1. Tenta RAM primeiro (L1) - Super rápido
+    // 1. Try RAM first (L1) with TTL validation
     if (type == CacheType.memory || type == CacheType.both) {
-      if (_memoryCache.containsKey(key)) {
-        return _memoryCache[key];
+      final entry = _memoryCache[key];
+      if (entry != null) {
+        if (ttl == null || (now - entry.createdAt <= ttl.inMilliseconds)) {
+          // Promote to "Recently Used" by re-inserting
+          _memoryCache.remove(key);
+          _memoryCache[key] = entry;
+          return entry.data;
+        } else {
+          _memoryCache.remove(key); // Expired in L1
+        }
       }
     }
 
-    // 2. Tenta Disco (L2) - SQLite
-    // A busca é automática pelo ID gerado via endpoint/token
+    // 2. Try Disk (L2)
     final map = await _dbHelper.getCache(key);
 
     if (map != null) {
-      // Verifica TTL se fornecido (tempo de validade do dado)
-      if (ttl != null) {
-        final createdAt = map['created_at'] as int;
-        final now = DateTime.now().millisecondsSinceEpoch;
-        if (now - createdAt > ttl.inMilliseconds) {
-          // Cache expirado - O sistema vai buscar novo dado na API automaticamente via GetRequest
-          return null;
-        }
+      final createdAt = map['created_at'] as int;
+      if (ttl != null && (now - createdAt > ttl.inMilliseconds)) {
+        await _dbHelper.deleteCache(key);
+        return null;
       }
 
       final result = ResultApi(
-        response: http.Response(map['body'], map['status_code']),
+        response: Response(map['body'], map['status_code']),
       );
 
-      // Se achou no disco e o tipo era memory/both, sobe para RAM para o próximo acesso
+      // Promote to L1
       if (type != CacheType.disk) {
-        _manageMemoryGrowth();
-        _memoryCache[key] = result;
+        _saveToMemory(key, result, createdAt);
       }
       return result;
     }
@@ -76,30 +99,33 @@ class CacheManager {
     return null;
   }
 
-  /// Gerencia o crescimento da RAM para evitar leaks
-  void _manageMemoryGrowth() {
-    if (_memoryCache.length >= maxMemoryItems) {
-      // Remove o item mais antigo (primeiro no Map)
+  void _saveToMemory(String key, ResultApi data, int createdAt) {
+    // LRU: If key exists, remove to re-insert at the end
+    if (_memoryCache.containsKey(key)) {
+      _memoryCache.remove(key);
+    } else if (_memoryCache.length >= maxMemoryItems) {
+      // Remove the oldest (first) item
       final firstKey = _memoryCache.keys.first;
       _memoryCache.remove(firstKey);
     }
+    _memoryCache[key] = _MemoryCacheEntry(data, createdAt);
   }
 
+  /// Saves a [ResultApi] into the specified cache levels.
   Future<void> save({
     required CacheType type,
     required String token,
     required String endpoint,
     required ResultApi data,
+    String? cacheGroup,
   }) async {
-    final key = _generateKey(token, endpoint);
+    final key = _generateKey(token, endpoint, cacheGroup: cacheGroup);
+    final now = DateTime.now().millisecondsSinceEpoch;
 
-    // Salva na RAM (L1)
     if (type == CacheType.memory || type == CacheType.both) {
-      _manageMemoryGrowth();
-      _memoryCache[key] = data;
+      _saveToMemory(key, data, now);
     }
 
-    // Salva no Disco (L2) - Persistência Real e Pesquisável automaticamente
     if (type == CacheType.disk || type == CacheType.both) {
       await _dbHelper.saveCache(
         key: key,
@@ -110,16 +136,22 @@ class CacheManager {
     }
   }
 
-  /// Salva um modelo customizado em uma tabela dinâmica baseada no esquema do modelo
+  /// Persists a custom [SqlModel] into its corresponding dynamic table.
   Future<void> saveModel(SqlModel model) async {
     await _dbHelper.saveModel(model);
   }
 
-  /// Recupera dados crus de uma tabela dinâmica
+  /// Fetches raw data from a specific [tableName].
   Future<List<Map<String, dynamic>>> getModels(String tableName) async {
     return await _dbHelper.getModels(tableName);
   }
 
+  /// Wipes only the memory cache.
+  static void clearMemory() {
+    _memoryCache.clear();
+  }
+
+  /// Wipes all data from both [L1] and [L2] caches.
   static Future<void> clearAll({SqlDatabaseHelper? dbHelper}) async {
     _memoryCache.clear();
     final helper = dbHelper ?? SqlDatabaseHelper();

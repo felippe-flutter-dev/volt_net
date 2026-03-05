@@ -1,35 +1,27 @@
-/// Modelo para testes de objeto único
+/// A simple model used for testing purposes within the framework.
 class TestModel {
+  /// The name of the test item.
   final String nome;
-  final String message;
 
-  TestModel({
-    required this.nome,
-    required this.message,
-  });
+  /// Creates a [TestModel].
+  TestModel({required this.nome});
 
-  factory TestModel.fromJson(Map<String, dynamic> json) {
-    return TestModel(
-      nome: json['nome'] ?? '',
-      message: json['message'] ?? '',
-    );
-  }
+  /// Factory constructor to create a [TestModel] from a JSON map.
+  factory TestModel.fromJson(Map<String, dynamic> json) =>
+      TestModel(nome: json['nome'] as String? ?? 'Unknown');
 
-  Map<String, dynamic> toJson() {
-    return {
-      'nome': nome,
-      'message': message,
-    };
-  }
+  /// Converts the [TestModel] to a JSON map.
+  Map<String, dynamic> toJson() => {'nome': nome};
 
-  /// Mock estático para teste de objeto único
-  static TestModel mock() => TestModel(
-        nome: 'Flutter Test',
-        message: 'Sucesso no parse de objeto único',
-      );
+  /// Returns a mocked instance of [TestModel].
+  factory TestModel.mock() => TestModel(nome: 'Flutter Test');
 
+  /// Returns a mocked list of [TestModel].
   static List<TestModel> mockList() => [
-        TestModel(nome: 'Item 1', message: 'Mensagem 1'),
-        TestModel(nome: 'Item 2', message: 'Mensagem 2'),
+        TestModel(nome: 'Flutter Test 1'),
+        TestModel(nome: 'Flutter Test 2'),
       ];
+
+  @override
+  String toString() => 'TestModel(nome: $nome)';
 }

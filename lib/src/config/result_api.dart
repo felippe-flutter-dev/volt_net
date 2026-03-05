@@ -1,16 +1,31 @@
 import 'dart:convert';
-
 import 'package:http/http.dart';
 
+/// Represents the raw result of an API request.
 class ResultApi {
+  /// Optional body map if provided directly.
   final Map<String, dynamic>? body;
+
+  /// The raw HTTP [Response] from the server.
   final Response? response;
-  final bool isPending; // Nova flag para requisições offline-first
 
-  ResultApi({this.body, this.response, this.isPending = false});
+  /// Whether the request is still pending (offline queue).
+  final bool isPending;
 
+  /// Whether the request was cancelled by a newer request (Race Condition).
+  final bool isCancelled;
+
+  ResultApi({
+    this.body,
+    this.response,
+    this.isPending = false,
+    this.isCancelled = false,
+  });
+
+  /// The HTTP status code of the response.
   int get statusCode => response?.statusCode ?? 0;
 
+  /// Returns the response body as a [String].
   String? get bodyAsString {
     if (body != null && body!.isNotEmpty) {
       return jsonEncode(body);
@@ -26,12 +41,15 @@ class ResultApi {
     return null;
   }
 
-  Map<String, dynamic>? get jsonBody {
+  /// Returns the decoded JSON body.
+  ///
+  /// Can be a [Map<String, dynamic>] or a [List<dynamic>].
+  dynamic get jsonBody {
     if (body != null) return body;
     final source = bodyAsString;
     if (source != null) {
       try {
-        return jsonDecode(source) as Map<String, dynamic>;
+        return jsonDecode(source);
       } catch (_) {
         return null;
       }
@@ -39,7 +57,9 @@ class ResultApi {
     return null;
   }
 
+  /// True if the status code is in the 200-299 range and not cancelled.
   bool get isSuccess =>
+      !isCancelled &&
       response != null &&
       response!.statusCode >= 200 &&
       response!.statusCode < 300;
@@ -54,5 +74,5 @@ class ResultApi {
       response!.statusCode >= 500 &&
       response!.statusCode < 600;
 
-  bool get isNetworkError => response == null && body == null;
+  bool get isNetworkError => response == null && body == null && !isCancelled;
 }

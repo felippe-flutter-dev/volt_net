@@ -1,133 +1,223 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../../volt_net.dart';
 
+/// [SyncQueueManager] handles the offline synchronization logic.
 class SyncQueueManager {
-  static final SyncQueueManager _instance = SyncQueueManager._internal();
-  factory SyncQueueManager() => _instance;
+  static SyncQueueManager? _customInstance;
+  static final SyncQueueManager _singleton = SyncQueueManager._internal();
+
+  /// Returns the singleton instance or a custom mock instance if set.
+  factory SyncQueueManager() => _customInstance ?? _singleton;
+
   SyncQueueManager._internal();
+
+  /// Allows injecting a mock instance for testing.
+  static void setMock(SyncQueueManager? mock) {
+    _customInstance = mock;
+  }
 
   SqlDatabaseHelper _dbHelper = SqlDatabaseHelper();
   Connectivity _connectivity = Connectivity();
+  http.Client? _httpClient;
   StreamSubscription? _subscription;
+  Timer? _fallbackTimer;
   bool _isSyncing = false;
 
-  /// Permite injetar dependências para testes
-  @visibleForTesting
+  static const int maxRetries = 5;
+  static const int baseDelaySeconds = 10;
+
+  final StreamController<String> _syncController =
+      StreamController<String>.broadcast();
+  Stream<String> get syncStream => _syncController.stream;
+
+  final StreamController<void> _queueFinishedController =
+      StreamController<void>.broadcast();
+  Stream<void> get onQueueFinished => _queueFinishedController.stream;
+
   void setDependencies(
-      {Connectivity? connectivity, SqlDatabaseHelper? dbHelper}) {
+      {Connectivity? connectivity,
+      SqlDatabaseHelper? dbHelper,
+      http.Client? httpClient}) {
     if (connectivity != null) _connectivity = connectivity;
     if (dbHelper != null) _dbHelper = dbHelper;
+    if (httpClient != null) _httpClient = httpClient;
   }
 
-  /// Inicia a observação da internet. Deve ser chamado no init do app.
   void startMonitoring() {
     _subscription?.cancel();
+    _fallbackTimer?.cancel();
+
     _subscription = _connectivity.onConnectivityChanged.listen((results) {
-      // Verifica se há alguma conexão ativa no array de resultados
       final hasConnection =
           results.any((result) => result != ConnectivityResult.none);
       if (hasConnection) {
         syncPendingRequests();
       }
     });
+
+    _fallbackTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      syncPendingRequests();
+    });
   }
 
-  /// Adiciona uma requisição na fila offline
   Future<void> enqueue({
     required String endpoint,
     required String method,
     required dynamic body,
     required Map<String, String> headers,
+    bool isMultipart = false,
+    List<String>? filePaths,
   }) async {
     final db = await _dbHelper.database;
-    await db.insert('offline_sync_queue', {
+    await db.insert(SqlDatabaseHelper.syncTable, {
       'endpoint': endpoint,
       'method': method,
-      'body_payload': jsonEncode(body),
+      'body_payload': body != null ? jsonEncode(body) : null,
       'headers': jsonEncode(headers),
       'created_at': DateTime.now().millisecondsSinceEpoch,
+      'retries': 0,
+      'last_attempt': 0,
+      'is_multipart': isMultipart ? 1 : 0,
+      'file_paths': filePaths != null ? jsonEncode(filePaths) : null,
     });
-    debugPrint('VoltNet: Request saved to offline queue ($endpoint)');
+    VoltLog.i('Request saved to offline queue ($endpoint)');
   }
 
-  /// Processa a fila de pendências
   Future<void> syncPendingRequests({http.Client? httpClient}) async {
     if (_isSyncing) return;
     _isSyncing = true;
 
+    final client = httpClient ?? _httpClient ?? http.Client();
+
     try {
       final db = await _dbHelper.database;
-      final List<Map<String, dynamic>> pending =
-          await db.query('offline_sync_queue', orderBy: 'created_at ASC');
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      final List<Map<String, dynamic>> pending = await db.query(
+          SqlDatabaseHelper.syncTable,
+          where: 'retries < ?',
+          whereArgs: [maxRetries],
+          orderBy: 'created_at ASC');
 
       if (pending.isEmpty) {
-        _isSyncing = false;
         return;
       }
 
-      debugPrint(
-          'VoltNet: Sincronizando ${pending.length} requisições pendentes...');
-
-      final client = httpClient ?? http.Client();
-
       for (var row in pending) {
         final id = row['id'];
+        final retries = row['retries'] as int;
+        final lastAttempt = row['last_attempt'] as int;
+
+        if (retries > 0) {
+          final delay = pow(2, retries) * baseDelaySeconds * 1000;
+          if (now - lastAttempt < delay) continue;
+        }
+
         final endpoint = row['endpoint'] as String;
         final method = row['method'] as String;
-        final body = jsonDecode(row['body_payload']);
+        final isMultipart = (row['is_multipart'] as int?) == 1;
+        final bodyPayload = row['body_payload'];
+        final filePathsPayload = row['file_paths'];
+
         final Map<String, String> headers =
             Map<String, String>.from(jsonDecode(row['headers']));
+        final uri = Uri.parse(endpoint);
 
         try {
           http.Response response;
-          final uri = Uri.parse(endpoint);
+          http.BaseRequest request;
 
-          if (method == 'POST') {
-            response = await client.post(uri,
-                headers: headers, body: jsonEncode(body));
-          } else if (method == 'PUT') {
-            response =
-                await client.put(uri, headers: headers, body: jsonEncode(body));
-          } else if (method == 'DELETE') {
-            response = await client.delete(uri,
-                headers: headers, body: jsonEncode(body));
+          if (isMultipart) {
+            final multipartRequest = http.MultipartRequest(method, uri);
+            multipartRequest.headers.addAll(headers);
+
+            if (bodyPayload != null) {
+              final fields = jsonDecode(bodyPayload) as Map<String, dynamic>;
+              fields
+                  .forEach((k, v) => multipartRequest.fields[k] = v.toString());
+            }
+
+            if (filePathsPayload != null) {
+              final paths = List<String>.from(jsonDecode(filePathsPayload));
+              for (var path in paths) {
+                multipartRequest.files
+                    .add(await http.MultipartFile.fromPath('file', path));
+              }
+            }
+            request = multipartRequest;
           } else {
-            continue;
+            final standardRequest = http.Request(method, uri);
+            standardRequest.headers.addAll(headers);
+            if (bodyPayload != null) {
+              standardRequest.body =
+                  bodyPayload is String ? bodyPayload : jsonEncode(bodyPayload);
+            }
+            request = standardRequest;
           }
 
+          final streamedResponse = await client.send(request);
+          response = await http.Response.fromStream(streamedResponse);
+
+          // Success: 2xx range
           if (response.statusCode >= 200 && response.statusCode < 300) {
-            await db
-                .delete('offline_sync_queue', where: 'id = ?', whereArgs: [id]);
-            debugPrint('VoltNet: Sync success ($endpoint)');
-          } else if (response.statusCode >= 400 && response.statusCode < 500) {
-            // Erros do cliente (401, 404, etc) não devem ser retentados eternamente
-            await db
-                .delete('offline_sync_queue', where: 'id = ?', whereArgs: [id]);
-            debugPrint(
-                'VoltNet: Fatal error in sync ($endpoint). Removed from queue.');
+            await db.delete(SqlDatabaseHelper.syncTable,
+                where: 'id = ?', whereArgs: [id]);
+            VoltLog.i('Sync success ($endpoint)');
+            _syncController.add(endpoint);
           }
-        } on http.ClientException catch (e) {
-          debugPrint(
-              'VoltNet: Network failure in sync for item $id: $e. Retrying later.');
-          break;
+          // Client Error (except 429): Don't retry, just remove from queue
+          else if (response.statusCode >= 400 &&
+              response.statusCode < 500 &&
+              response.statusCode != 429) {
+            await db.delete(SqlDatabaseHelper.syncTable,
+                where: 'id = ?', whereArgs: [id]);
+            VoltLog.w(
+                'Sync aborted for $endpoint (Client Error: ${response.statusCode})');
+          }
+          // Server Error or 429: Retry with Backoff
+          else {
+            await _incrementRetry(id, retries);
+            VoltLog.w(
+                'Sync failed for $endpoint (Status: ${response.statusCode}). Retrying later...');
+          }
         } catch (e) {
-          // Erro genérico (ex: falha no parse ou banco), mantém na fila para segurança
-          debugPrint(
-              'VoltNet: Unexpected error syncing item $id: $e. Retrying later.');
+          await _incrementRetry(id, retries);
+          VoltLog.e('Unexpected error syncing item $id', e);
           break;
         }
       }
-      client.close();
     } finally {
+      if (httpClient == null && _httpClient == null) client.close();
       _isSyncing = false;
+      _queueFinishedController.add(null);
     }
+  }
+
+  Future<void> _incrementRetry(int id, int currentRetries) async {
+    final db = await _dbHelper.database;
+    await db.update(
+        SqlDatabaseHelper.syncTable,
+        {
+          'retries': currentRetries + 1,
+          'last_attempt': DateTime.now().millisecondsSinceEpoch,
+        },
+        where: 'id = ?',
+        whereArgs: [id]);
+  }
+
+  /// Resets the manager state for testing purposes.
+  void reset() {
+    dispose();
+    _isSyncing = false;
+    _httpClient = null;
   }
 
   void dispose() {
     _subscription?.cancel();
+    _fallbackTimer?.cancel();
   }
 }

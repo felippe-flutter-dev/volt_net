@@ -1,161 +1,311 @@
+import 'dart:async';
 import 'dart:convert';
-
-import 'package:volt_net/volt_net.dart';
-import 'package:volt_net/src/utils/decode_json_isolate.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:uuid/uuid.dart';
 
+import '../config/base_api_url_config.dart';
+import '../config/result_api.dart';
+import '../models/result_model.dart';
+import '../models/volt_file.dart';
+import '../cache/cache_manager.dart';
+import '../offline/sync_queue_manager.dart';
+import '../utils/decode_json_isolate.dart';
+import '../utils/debouncer.dart';
+import '../utils/volt_log.dart';
+import '../volt.dart';
+import 'throw_http_exception.dart';
+
+/// [PostRequest] handles all HTTP POST operations with Enterprise-grade resilience.
 class PostRequest<T extends BaseApiUrlConfig> {
   final http.Client client;
   final CacheManager requestCache;
+  final SyncQueueManager syncQueue;
+  final Map<String, Debouncer> debouncers;
+  final Map<String, Completer<ResultApi>> activeRequests;
 
-  PostRequest({http.Client? client, CacheManager? cache})
-      : client = client ?? http.Client(),
-        requestCache = cache ?? CacheManager();
+  PostRequest({
+    http.Client? client,
+    CacheManager? cache,
+    SyncQueueManager? syncQueue,
+  })  : client = client ?? http.Client(),
+        requestCache = cache ?? CacheManager(),
+        syncQueue = syncQueue ?? SyncQueueManager(),
+        debouncers = {},
+        activeRequests = {};
 
   Future<ResultApi> post(
     T apiConfig, {
     String endpoint = '',
     dynamic data,
     bool isMultipart = false,
-    bool offlineSync = true, // Permite desativar a fila offline se desejar
+    bool offlineSync = true,
     Map<String, String>? personalizedHeader,
-    String? personalizedToken,
+    Map<String, String>? extraHeaders,
+    bool cancelPrevious = false,
+    String? cacheGroup,
+    Duration? timeout,
+  }) {
+    final url = Uri.parse(apiConfig.resolveBaseUrl()).resolve(endpoint);
+    final requestKey = 'POST_${url.toString()}';
+
+    if (cancelPrevious) {
+      activeRequests[requestKey]?.complete(ResultApi(isCancelled: true));
+      activeRequests.remove(requestKey);
+    }
+
+    final completer = Completer<ResultApi>();
+    activeRequests[requestKey] = completer;
+
+    _executePost(
+      apiConfig: apiConfig,
+      endpoint: endpoint,
+      completer: completer,
+      data: data,
+      isMultipart: isMultipart,
+      offlineSync: offlineSync,
+      personalizedHeader: personalizedHeader,
+      extraHeaders: extraHeaders,
+      requestKey: requestKey,
+      timeout: timeout,
+    );
+
+    return completer.future;
+  }
+
+  Future<void> _executePost({
+    required T apiConfig,
+    required String endpoint,
+    required Completer<ResultApi> completer,
+    required String requestKey,
+    dynamic data,
+    bool isMultipart = false,
+    bool offlineSync = true,
+    Map<String, String>? personalizedHeader,
+    Map<String, String>? extraHeaders,
+    Duration? timeout,
   }) async {
     final url = Uri.parse(apiConfig.resolveBaseUrl()).resolve(endpoint);
-    final headers = personalizedHeader ?? await apiConfig.getHeader();
-
     try {
-      http.Response response;
+      final headers = personalizedHeader ?? await apiConfig.getHeader();
+      if (extraHeaders != null) {
+        headers.addAll(extraHeaders);
+      }
+
+      http.BaseRequest request;
+      List<String>? voltFilePaths;
 
       if (isMultipart) {
-        // ... (lógica multipart inalterada)
-        var request = http.MultipartRequest('POST', url);
-        request.headers.addAll(headers);
+        var multipartRequest = http.MultipartRequest('POST', url);
+        multipartRequest.headers.addAll(headers);
+        voltFilePaths = [];
 
         if (data is Map<String, dynamic>) {
           for (var entry in data.entries) {
             final value = entry.value;
-            if (value is http.MultipartFile) {
-              request.files.add(value);
-            } else if (value is Iterable<http.MultipartFile>) {
-              request.files.addAll(value);
+            if (value is VoltFile) {
+              multipartRequest.files.add(await value.toMultipartFile());
+              voltFilePaths.add(value.path);
+            } else if (value is Iterable<VoltFile>) {
+              for (var file in value) {
+                multipartRequest.files.add(await file.toMultipartFile());
+                voltFilePaths.add(file.path);
+              }
+            } else if (value is http.MultipartFile) {
+              multipartRequest.files.add(value);
             } else {
-              request.fields[entry.key] = value.toString();
+              multipartRequest.fields[entry.key] = value.toString();
             }
           }
-        } else if (data is http.MultipartRequest) {
-          request = data;
         }
-
-        final streamedResponse = await client.send(request);
-        response = await http.Response.fromStream(streamedResponse);
+        request = multipartRequest;
       } else {
-        final bodyJson = data != null ? jsonEncode(data) : null;
-        response = await client.post(url, headers: headers, body: bodyJson);
+        final postRequest = http.Request('POST', url);
+        postRequest.headers.addAll(headers);
+        if (data != null) {
+          postRequest.body = jsonEncode(data);
+        }
+        request = postRequest;
+      }
+
+      for (var interceptor in Volt.interceptors) {
+        request = await interceptor.onRequest(request);
+      }
+
+      VoltLog.d('POST Request: ${request.url}');
+
+      final effectiveTimeout = timeout ?? Volt.timeout;
+      final streamedResponse =
+          await client.send(request).timeout(effectiveTimeout);
+      var response = await http.Response.fromStream(streamedResponse);
+
+      for (var interceptor in Volt.interceptors) {
+        response = await interceptor.onResponse(response);
       }
 
       final resultApi = ResultApi(response: response);
-
-      if (!resultApi.isSuccess) {
-        throw ThrowHttpException.handle(resultApi);
+      if (!resultApi.isSuccess) throw ThrowHttpException.handle(resultApi);
+      if (!completer.isCompleted) completer.complete(resultApi);
+    } catch (e) {
+      for (var interceptor in Volt.interceptors) {
+        interceptor.onError(e);
       }
 
-      return resultApi;
-    } on http.ClientException {
-      if (offlineSync && !isMultipart) {
-        await SyncQueueManager().enqueue(
+      final voltEx = ThrowHttpException.mapNativeException(e);
+
+      if (offlineSync && voltEx is HttpNetworkException) {
+        VoltLog.w('Network failure. Enqueuing POST (Offline Sync)');
+
+        final headers = personalizedHeader ?? await apiConfig.getHeader();
+        Map<String, dynamic> cleanData = {};
+        List<String> filePaths = [];
+
+        if (isMultipart && data is Map<String, dynamic>) {
+          data.forEach((k, v) {
+            if (v is VoltFile) {
+              filePaths.add(v.path);
+            } else if (v is Iterable<VoltFile>) {
+              filePaths.addAll(v.map((f) => f.path));
+            } else if (v is! http.MultipartFile) {
+              cleanData[k] = v;
+            }
+          });
+        } else {
+          cleanData = data is Map<String, dynamic> ? data : {};
+        }
+
+        await syncQueue.enqueue(
           endpoint: url.toString(),
           method: 'POST',
-          body: data,
+          body: isMultipart ? cleanData : data,
           headers: headers,
+          isMultipart: isMultipart,
+          filePaths: filePaths.isNotEmpty ? filePaths : null,
         );
-        return ResultApi(isPending: true);
+
+        if (!completer.isCompleted) {
+          completer.complete(ResultApi(isPending: true));
+        }
+      } else {
+        if (!completer.isCompleted) completer.completeError(voltEx);
       }
-      rethrow;
+    } finally {
+      if (activeRequests[requestKey] == completer) {
+        activeRequests.remove(requestKey);
+      }
+    }
+  }
+
+  Future<List<ResultApi>> resilientBatch(
+    List<Future<ResultApi> Function({Map<String, String>? extraHeaders})>
+        requests, {
+    String? idempotencyKey,
+    bool rollbackOnFailure = true,
+    Future<void> Function(List<ResultApi>)? onRollback,
+  }) async {
+    List<ResultApi> results = [];
+    final effectiveIdempotencyKey = idempotencyKey ?? const Uuid().v4();
+
+    try {
+      for (var i = 0; i < requests.length; i++) {
+        final request = requests[i];
+        ResultApi result;
+        try {
+          result = await request(extraHeaders: {
+            'Idempotency-Key': '$effectiveIdempotencyKey-$i',
+          });
+        } catch (e) {
+          if (rollbackOnFailure) await _handleBatchFailure(results, onRollback);
+          throw VoltNetException('Batch failed at step ${i + 1}. Error: $e');
+        }
+        if (!result.isSuccess) {
+          if (rollbackOnFailure) await _handleBatchFailure(results, onRollback);
+          throw VoltNetException('Batch failed at step ${i + 1}',
+              statusCode: result.statusCode);
+        }
+        results.add(result);
+      }
+      return results;
     } catch (e) {
-      debugPrint('VoltNet POST ERROR: $e');
       rethrow;
     }
   }
 
-  // Adicionei <M> no retorno e permiti que seja nulo (M?) para casos de 204
+  Future<void> _handleBatchFailure(List<ResultApi> successfulResults,
+      Future<void> Function(List<ResultApi>)? onRollback) async {
+    if (onRollback != null) await onRollback(successfulResults);
+  }
+
+  Future<ResultApi> postWithDebounce(
+    T apiConfig, {
+    String endpoint = '',
+    dynamic data,
+    Duration delay = const Duration(milliseconds: 500),
+    bool isMultipart = false,
+    bool offlineSync = true,
+    Map<String, String>? personalizedHeader,
+    String? cacheGroup,
+    String? debounceKey,
+    Duration? timeout,
+  }) async {
+    final baseUrl = apiConfig.resolveBaseUrl();
+    final groupKey = debounceKey ?? 'DEBOUNCE_POST_${baseUrl}_$endpoint';
+    if (activeRequests.containsKey(groupKey) &&
+        !activeRequests[groupKey]!.isCompleted) {
+      activeRequests[groupKey]!.complete(ResultApi(isCancelled: true));
+    }
+    final completer = Completer<ResultApi>();
+    activeRequests[groupKey] = completer;
+    debouncers
+        .putIfAbsent(groupKey, () => Debouncer(delay: delay))
+        .run(() async {
+      try {
+        final result = await post(apiConfig,
+            endpoint: endpoint,
+            data: data,
+            isMultipart: isMultipart,
+            offlineSync: offlineSync,
+            personalizedHeader: personalizedHeader,
+            timeout: timeout);
+        if (!completer.isCompleted) completer.complete(result);
+      } catch (e) {
+        if (!completer.isCompleted) completer.completeError(e);
+      }
+    });
+    return completer.future;
+  }
+
   Future<ResultModel<M>> postModel<M>(
     T apiConfig,
     String endpoint,
     M Function(Map<String, dynamic>) parser, {
     dynamic data,
     bool isMultipart = false,
+    bool offlineSync = true,
     Map<String, String>? personalizedHeader,
+    bool cancelPrevious = false,
+    String? cacheGroup,
+    Duration? timeout,
   }) async {
-    // 1. Faz a chamada HTTP
-    final resultApi = await post(
-      apiConfig,
-      endpoint: endpoint,
-      data: data,
-      isMultipart: isMultipart,
-      personalizedHeader: personalizedHeader,
-    );
-
-    // 2. Extrai o corpo usando seu novo método que limpa 'null' e vazios
-    final String? content = resultApi.bodyAsString;
-
-    // 3. Se não for sucesso, o método post() já deveria ter lançado erro,
-    // mas garantimos o retorno aqui caso o fluxo continue.
-    if (!resultApi.isSuccess) {
-      return ResultModel<M>(result: resultApi);
-    }
-
-    debugPrint("Log: API Success detected.");
-
-    // 4. Se o corpo for nulo/vazio (ex: 204 No Content), retornamos sucesso SEM parse
-    if (content == null) {
-      debugPrint("Log: Empty body (null). Returning without Isolate parse.");
-      return ResultModel<M>(result: resultApi);
-    }
-
-    // 5. Se tem conteúdo, entramos no Try/Catch apenas para o processamento do Isolate
     try {
-      debugPrint("Log: Starting Isolate decode with content.");
-      final model = await compute(
-        decodeJsonInIsolate<M>,
-        [content, parser],
-      );
-
+      final resultApi = await post(apiConfig,
+          endpoint: endpoint,
+          data: data,
+          isMultipart: isMultipart,
+          offlineSync: offlineSync,
+          personalizedHeader: personalizedHeader,
+          cancelPrevious: cancelPrevious,
+          cacheGroup: cacheGroup,
+          timeout: timeout);
+      if (resultApi.isCancelled) return ResultModel<M>(result: resultApi);
+      final String? content = resultApi.bodyAsString;
+      if (content == null || !resultApi.isSuccess) {
+        return ResultModel<M>(result: resultApi);
+      }
+      final model = await compute(decodeJsonInIsolate<M>, [content, parser]);
       return ResultModel<M>(model: model, result: resultApi);
-    } catch (e, s) {
-      debugPrint('Log Error: Failed to decode JSON: $e');
-      debugPrintStack(stackTrace: s);
-      rethrow;
-    }
-  }
-
-  // Crie um método específico para listas para evitar a confusão do 'asList'
-  Future<List<M>> postList<M>(
-    T apiConfig,
-    String endpoint,
-    M Function(Map<String, dynamic>) parser, {
-    dynamic data,
-    bool isMultipart = false,
-    Map<String, String>? personalizedHeader,
-  }) async {
-    final resultApi = await post(
-      apiConfig,
-      endpoint: endpoint,
-      data: data,
-      isMultipart: isMultipart,
-      personalizedHeader: personalizedHeader,
-    );
-
-    try {
-      return await compute(decodeJsonListInIsolate<M>, [
-        resultApi.bodyAsString,
-        parser,
-      ]);
-    } catch (e, s) {
-      debugPrint('Erro ao decodificar Lista JSON no POST: $e');
-      debugPrintStack(stackTrace: s);
-      rethrow;
+    } catch (e) {
+      return ResultModel<M>(error: ThrowHttpException.mapNativeException(e));
     }
   }
 }
