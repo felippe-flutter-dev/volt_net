@@ -6,11 +6,13 @@ import 'package:http/http.dart' as http;
 import '../../volt_net.dart';
 
 /// [SyncQueueManager] handles the offline synchronization logic.
+///
+/// It monitors connectivity and retries failed requests with exponential backoff.
 class SyncQueueManager {
   static SyncQueueManager? _customInstance;
   static final SyncQueueManager _singleton = SyncQueueManager._internal();
 
-  /// Returns the singleton instance or a custom mock instance if set.
+  /// Returns the singleton instance or a custom mock instance if set via [setMock].
   factory SyncQueueManager() => _customInstance ?? _singleton;
 
   SyncQueueManager._internal();
@@ -32,12 +34,17 @@ class SyncQueueManager {
 
   final StreamController<String> _syncController =
       StreamController<String>.broadcast();
+
+  /// Stream that emits the endpoint URL whenever a request is successfully synced.
   Stream<String> get syncStream => _syncController.stream;
 
   final StreamController<void> _queueFinishedController =
       StreamController<void>.broadcast();
+
+  /// Stream that notifies when the entire synchronization queue has been processed.
   Stream<void> get onQueueFinished => _queueFinishedController.stream;
 
+  /// Injects dependencies for testing or custom configurations.
   void setDependencies(
       {Connectivity? connectivity,
       SqlDatabaseHelper? dbHelper,
@@ -47,6 +54,7 @@ class SyncQueueManager {
     if (httpClient != null) _httpClient = httpClient;
   }
 
+  /// Starts monitoring network changes and sets up a periodic fallback timer.
   void startMonitoring() {
     _subscription?.cancel();
     _fallbackTimer?.cancel();
@@ -64,6 +72,12 @@ class SyncQueueManager {
     });
   }
 
+  /// Adds a request to the offline queue to be synced later.
+  ///
+  /// [endpoint] The full URL of the request.
+  /// [method] The HTTP method (POST, PUT, DELETE).
+  /// [body] The payload data.
+  /// [headers] HTTP headers to be included.
   Future<void> enqueue({
     required String endpoint,
     required String method,
@@ -87,6 +101,7 @@ class SyncQueueManager {
     VoltLog.i('Request saved to offline queue ($endpoint)');
   }
 
+  /// Attempts to sync all pending requests in the database.
   Future<void> syncPendingRequests({http.Client? httpClient}) async {
     if (_isSyncing) return;
     _isSyncing = true;
@@ -162,24 +177,19 @@ class SyncQueueManager {
           final streamedResponse = await client.send(request);
           response = await http.Response.fromStream(streamedResponse);
 
-          // Success: 2xx range
           if (response.statusCode >= 200 && response.statusCode < 300) {
             await db.delete(SqlDatabaseHelper.syncTable,
                 where: 'id = ?', whereArgs: [id]);
             VoltLog.i('Sync success ($endpoint)');
             _syncController.add(endpoint);
-          }
-          // Client Error (except 429): Don't retry, just remove from queue
-          else if (response.statusCode >= 400 &&
+          } else if (response.statusCode >= 400 &&
               response.statusCode < 500 &&
               response.statusCode != 429) {
             await db.delete(SqlDatabaseHelper.syncTable,
                 where: 'id = ?', whereArgs: [id]);
             VoltLog.w(
                 'Sync aborted for $endpoint (Client Error: ${response.statusCode})');
-          }
-          // Server Error or 429: Retry with Backoff
-          else {
+          } else {
             await _incrementRetry(id, retries);
             VoltLog.w(
                 'Sync failed for $endpoint (Status: ${response.statusCode}). Retrying later...');
@@ -216,6 +226,7 @@ class SyncQueueManager {
     _httpClient = null;
   }
 
+  /// Disposes resources and cancels active subscriptions/timers.
   void dispose() {
     _subscription?.cancel();
     _fallbackTimer?.cancel();

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 class DebugUtils {
+  /// Prints the request URL, method, headers, and body in a structured format.
   static void printUrl({
     required String method,
     required String url,
@@ -22,6 +23,7 @@ class DebugUtils {
     debugPrint('╚══════════════════════════════════════════');
   }
 
+  /// Generates a CURL command string for the given request parameters.
   static String generateCurl({
     required String method,
     required String url,
@@ -44,6 +46,7 @@ class DebugUtils {
     return buffer.toString();
   }
 
+  /// Prints the CURL command for the request.
   static void printCurl({
     required String method,
     required String url,
@@ -56,8 +59,8 @@ class DebugUtils {
       headers: headers,
       body: body,
     );
-    debugPrint('╔════════════════ CURL PARA POSTMAN/TERMINAL ════════════════');
+    debugPrint('╔════════════════ CURL ════════════════');
     debugPrint(curl);
-    debugPrint('╚══════════════════════════════════════════════════════════');
+    debugPrint('╚══════════════════════════════════════');
   }
 }
