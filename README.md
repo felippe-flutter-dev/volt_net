@@ -84,6 +84,7 @@ void main() async {
     maxMemoryItems: 200,                // L1/RAM Cache limit (Optional)
     enableSync: true,                   // Activate Offline Sync Engine (Default: true)
     defaultTimeout: Duration(seconds: 20), // Global timeout for all requests
+    logging: true,                      // Enable built-in CURL & Request logger
   );
 
   runApp(MyApp());
@@ -113,6 +114,13 @@ class MyEnterpriseConfig extends BaseApiUrlConfig {
 ---
 
 ## 🛠️ Essential Utilities (Show, Don't Tell)
+
+### 📊 Built-in Logging & CURL
+VoltNet includes a professional logging system integrated with `DebugUtils`. When `logging: true` is set during initialization, every request generates:
+- A structured Request/Response visual block.
+- A ready-to-use **CURL command** for terminal or Postman debugging.
+
+---
 
 ### 📡 GET Operations
 VoltNet separates **"What I received"** (ResultApi) from **"What I processed"** (Model).
