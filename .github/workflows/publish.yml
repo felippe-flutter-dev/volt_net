@@ -3,7 +3,7 @@ name: CD - Release & Publish
 on:
   push:
     branches: [ "main" ]
-    tags: [ "v*" ]                  # ← ESSA LINHA É A SOLUÇÃO
+    tags: [ "v*" ]
 
 permissions:
   contents: write
@@ -11,17 +11,19 @@ permissions:
 
 jobs:
   release:
-    # Só roda quando for push na main (bump + tag)
-    if: startsWith(github.ref, 'refs/heads/')
+    # Só roda em push normal na main (não roda no commit de release)
+    if: startsWith(github.ref, 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}          # ← usa o PAT para poder disparar tag depois
 
       - uses: subosito/flutter-action@v2
       - run: dart pub global activate cider
 
-      - name: Version Bump & Tag
+      - name: Version Bump & Create Tag
         run: |
           MSG=$(git log -1 --pretty=%s)
           
@@ -34,21 +36,26 @@ jobs:
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          
           git add pubspec.yaml CHANGELOG.md
           git commit -m "chore: release v$VERSION [skip ci]"
           git tag v$VERSION
-          git push origin main --tags
+          
+          # Push usando PAT (isso SIM dispara o job publish)
+          git push https://x-access-token:${{ secrets.PAT }}@github.com/${{ github.repository }}.git HEAD:main --tags
 
   publish:
-    # Só roda quando for push de tag (agora refType = tag → pub.dev aceita)
-    if: startsWith(github.ref, 'refs/tags/')
+    # Só roda quando for push de tag (refType = tag → pub.dev aceita)
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: pub.dev                    # ← obrigatório por causa da sua config
+    environment: pub.dev
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4          # já vem na tag automaticamente
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}   # já estamos na tag
 
       - uses: subosito/flutter-action@v2
 
