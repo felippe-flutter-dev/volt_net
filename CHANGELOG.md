@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## 2.1.1 (Pending)
+
+### Added
+- **Integrated Logging System**: Added a built-in logger that uses `DebugUtils` to display structured Request/Response data.
+- **CURL Generation**: Every network request now automatically generates a ready-to-use CURL command in the console when logging is enabled.
+- **Enhanced Documentation**: Refactored the entire codebase with triple-slash (`///`) documentation comments and usage examples in English.
+
+### Changed
+- **Logging Flag**: Added `logging` parameter to `Volt.initialize()` to control the output of internal network logs.
+- **DebugUtils Integration**: Unified all request handlers (`GET`, `POST`, `PUT`, `DELETE`) to use `DebugUtils` for visual consistency.
+- **English Standards**: Translated all internal code comments and log labels to English.
+
+### Fixed
+- **Binding Initialization in Tests**: Fixed `volt_log_test.dart` to properly initialize Flutter bindings and handle sync monitoring during unit tests.
+
 ## 2.0.0 - 2026-03-04
 
 ### Added
@@ -27,18 +42,3 @@ All notable changes to this project will be documented in this file.
 - Persistence issues with multipart fields in the offline sync queue.
 - Isolate parsing reliability for complex or deeply nested JSON structures.
 - Compilation errors in `CacheManager.clearAll`.
-
-## 1.1.0 - 2026-03-03
-
-### Added
-- feat: implement Randal Schwartz refinements
-
-## 1.0.2 - 2026-03-02
-
-### Fixed
-- Automated versioning pipeline fixes and Cider integration.
-
-## 1.0.1 - 2026-03-02
-
-### Added
-- Initial stable release with Hybrid Cache (L1/L2), Isolates, and Offline-First engine.

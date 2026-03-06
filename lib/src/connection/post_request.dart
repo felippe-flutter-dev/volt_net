@@ -16,7 +16,9 @@ import '../utils/volt_log.dart';
 import '../volt.dart';
 import 'throw_http_exception.dart';
 
-/// [PostRequest] handles all HTTP POST operations with Enterprise-grade resilience.
+/// [PostRequest] handles all HTTP POST operations with built-in resilience.
+///
+/// It supports multipart requests, offline synchronization, and batch operations.
 class PostRequest<T extends BaseApiUrlConfig> {
   final http.Client client;
   final CacheManager requestCache;
@@ -34,6 +36,16 @@ class PostRequest<T extends BaseApiUrlConfig> {
         debouncers = {},
         activeRequests = {};
 
+  /// Executes a standard HTTP POST request.
+  ///
+  /// [data] The payload to send. Can be a Map, List, or String.
+  /// [isMultipart] Whether to send the request as `multipart/form-data`.
+  /// [offlineSync] If true, the request will be queued for later if the network fails.
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await postRequest.post(config, endpoint: 'users', data: {'name': 'New User'});
+  /// ```
   Future<ResultApi> post(
     T apiConfig, {
     String endpoint = '',
@@ -132,7 +144,16 @@ class PostRequest<T extends BaseApiUrlConfig> {
         request = await interceptor.onRequest(request);
       }
 
-      VoltLog.d('POST Request: ${request.url}');
+      VoltLog.logRequest(
+        method: request.method,
+        url: request.url.toString(),
+        headers: request.headers,
+        body: isMultipart
+            ? (voltFilePaths?.isNotEmpty == true
+                ? 'Multipart files: $voltFilePaths'
+                : null)
+            : data,
+      );
 
       final effectiveTimeout = timeout ?? Volt.timeout;
       final streamedResponse =
@@ -143,10 +164,17 @@ class PostRequest<T extends BaseApiUrlConfig> {
         response = await interceptor.onResponse(response);
       }
 
+      VoltLog.logResponse(
+        url: request.url.toString(),
+        statusCode: response.statusCode,
+        body: response.body,
+      );
+
       final resultApi = ResultApi(response: response);
       if (!resultApi.isSuccess) throw ThrowHttpException.handle(resultApi);
       if (!completer.isCompleted) completer.complete(resultApi);
     } catch (e) {
+      VoltLog.e('POST Request Error: $endpoint', e);
       for (var interceptor in Volt.interceptors) {
         interceptor.onError(e);
       }
@@ -196,6 +224,17 @@ class PostRequest<T extends BaseApiUrlConfig> {
     }
   }
 
+  /// Executes a batch of requests sequentially.
+  ///
+  /// If [rollbackOnFailure] is true, it will stop and call [onRollback] on any error.
+  ///
+  /// Example:
+  /// ```dart
+  /// await postRequest.resilientBatch([
+  ///   ({extraHeaders}) => postRequest.post(config, endpoint: 'step1', extraHeaders: extraHeaders),
+  ///   ({extraHeaders}) => postRequest.post(config, endpoint: 'step2', extraHeaders: extraHeaders),
+  /// ]);
+  /// ```
   Future<List<ResultApi>> resilientBatch(
     List<Future<ResultApi> Function({Map<String, String>? extraHeaders})>
         requests, {
@@ -236,6 +275,12 @@ class PostRequest<T extends BaseApiUrlConfig> {
     if (onRollback != null) await onRollback(successfulResults);
   }
 
+  /// Performs a POST request with a built-in debounce mechanism.
+  ///
+  /// Example:
+  /// ```dart
+  /// await postRequest.postWithDebounce(config, endpoint: 'save', data: {'val': 1});
+  /// ```
   Future<ResultApi> postWithDebounce(
     T apiConfig, {
     String endpoint = '',
@@ -275,6 +320,12 @@ class PostRequest<T extends BaseApiUrlConfig> {
     return completer.future;
   }
 
+  /// Executes a POST request and automatically parses the response into model [M].
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await postRequest.postModel(config, 'create', User.fromJson, data: {...});
+  /// ```
   Future<ResultModel<M>> postModel<M>(
     T apiConfig,
     String endpoint,

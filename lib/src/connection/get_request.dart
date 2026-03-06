@@ -14,6 +14,8 @@ import '../volt.dart';
 import 'throw_http_exception.dart';
 
 /// [GetRequest] is the main handler for HTTP GET operations.
+///
+/// It supports caching, debouncing, and automatic JSON decoding in isolates.
 class GetRequest<T extends BaseApiUrlConfig> {
   final http.Client client;
   final CacheManager requestCache;
@@ -33,7 +35,15 @@ class GetRequest<T extends BaseApiUrlConfig> {
         debouncers = debouncers ?? {},
         activeRequests = activeRequests ?? {};
 
-  /// Performs a GET request with a native [Debounce] mechanism.
+  /// Performs a GET request with a built-in debounce mechanism.
+  ///
+  /// [delay] The time to wait before executing the request.
+  /// [debounceKey] Optional custom key to identify this debounce group.
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await getRequest.getWithDebounce(config, 'search', queryParameters: {'q': 'flutter'});
+  /// ```
   Future<ResultApi> getWithDebounce(
     T apiConfig,
     String endpoint, {
@@ -91,7 +101,15 @@ class GetRequest<T extends BaseApiUrlConfig> {
     return completer.future;
   }
 
-  /// The root GET method.
+  /// Executes a standard HTTP GET request.
+  ///
+  /// [cacheEnabled] If true, the request will use the local cache system.
+  /// [cancelPrevious] If true, any ongoing request for the same URL will be cancelled.
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await getRequest.get(config, 'users');
+  /// ```
   Future<ResultApi> get(
     T apiConfig,
     String endpoint, {
@@ -177,6 +195,7 @@ class GetRequest<T extends BaseApiUrlConfig> {
           ttl: ttl,
         );
         if (cached != null) {
+          VoltLog.d('GET Request (Cache Hit): $fullUrl');
           if (!completer.isCompleted) completer.complete(cached);
           return;
         }
@@ -188,22 +207,30 @@ class GetRequest<T extends BaseApiUrlConfig> {
       http.BaseRequest request = http.Request('GET', uri)
         ..headers.addAll(headers);
 
-      // Apply interceptors
       for (var interceptor in Volt.interceptors) {
         request = await interceptor.onRequest(request);
       }
 
-      VoltLog.d('GET Request: ${request.url}');
+      VoltLog.logRequest(
+        method: request.method,
+        url: request.url.toString(),
+        headers: request.headers,
+      );
 
       final effectiveTimeout = timeout ?? Volt.timeout;
       final streamedResponse =
           await client.send(request).timeout(effectiveTimeout);
       var response = await http.Response.fromStream(streamedResponse);
 
-      // Apply interceptors to response
       for (var interceptor in Volt.interceptors) {
         response = await interceptor.onResponse(response);
       }
+
+      VoltLog.logResponse(
+        url: request.url.toString(),
+        statusCode: response.statusCode,
+        body: response.body,
+      );
 
       final resultApi = ResultApi(response: response);
 
@@ -223,6 +250,7 @@ class GetRequest<T extends BaseApiUrlConfig> {
 
       if (!completer.isCompleted) completer.complete(resultApi);
     } catch (e) {
+      VoltLog.e('GET Request Error: $endpoint', e);
       for (var interceptor in Volt.interceptors) {
         interceptor.onError(e);
       }
@@ -264,9 +292,8 @@ class GetRequest<T extends BaseApiUrlConfig> {
     }
   }
 
-  /// Old [getModel] method kept for compatibility.
-  ///
-  /// [asList] is still supported here.
+  /// Kept for backward compatibility. Fetches a model or a list of models.
+  @Deprecated('Use getModelResult or getListResult for better type safety.')
   Future<dynamic> getModel<M>(
     T apiConfig,
     String endpoint,
@@ -311,8 +338,15 @@ class GetRequest<T extends BaseApiUrlConfig> {
     return res.model;
   }
 
-  /// The new Enterprise-grade way to fetch models.
-  /// Returns a [ResultModel] which contains the model, raw result, and errors.
+  /// Fetches a single model [M] and automatically parses it.
+  ///
+  /// Returns a [ResultModel] containing the data, raw response, or errors.
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await getRequest.getModelResult(config, 'profile', User.fromJson);
+  /// if (result.hasData) print(result.model!.name);
+  /// ```
   Future<ResultModel<M>> getModelResult<M>(
     T apiConfig,
     String endpoint,
@@ -356,7 +390,12 @@ class GetRequest<T extends BaseApiUrlConfig> {
     }
   }
 
-  /// Fetches a list of data and converts it into a List of Model [M].
+  /// Fetches a list of models [M] and automatically parses it.
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await getRequest.getListResult(config, 'posts', Post.fromJson);
+  /// ```
   Future<ResultModel<List<M>>> getListResult<M>(
     T apiConfig,
     String endpoint,
@@ -404,6 +443,12 @@ class GetRequest<T extends BaseApiUrlConfig> {
     }
   }
 
+  /// Fetches raw bytes from a URL. Useful for images or downloads.
+  ///
+  /// Example:
+  /// ```dart
+  /// final bytes = await getRequest.getBytes(config, 'https://example.com/img.png');
+  /// ```
   Future<Uint8List> getBytes(
     T apiConfig,
     String url, {

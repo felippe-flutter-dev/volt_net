@@ -38,7 +38,11 @@ class DeleteRequest<T extends BaseApiUrlConfig> {
         finalRequest = await interceptor.onRequest(finalRequest);
       }
 
-      VoltLog.d('DELETE Request: ${finalRequest.url}');
+      VoltLog.logRequest(
+        method: finalRequest.method,
+        url: finalRequest.url.toString(),
+        headers: finalRequest.headers,
+      );
 
       final effectiveTimeout = timeout ?? Volt.timeout;
       final streamedResponse =
@@ -50,6 +54,12 @@ class DeleteRequest<T extends BaseApiUrlConfig> {
         response = await interceptor.onResponse(response);
       }
 
+      VoltLog.logResponse(
+        url: finalRequest.url.toString(),
+        statusCode: response.statusCode,
+        body: response.body,
+      );
+
       final resultApi = ResultApi(response: response);
 
       if (!resultApi.isSuccess) {
@@ -58,6 +68,7 @@ class DeleteRequest<T extends BaseApiUrlConfig> {
 
       return resultApi;
     } catch (e) {
+      VoltLog.e('DELETE Request Error: $endpoint', e);
       for (var interceptor in Volt.interceptors) {
         interceptor.onError(e);
       }

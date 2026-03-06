@@ -43,7 +43,12 @@ class PutRequest<T extends BaseApiUrlConfig> {
         finalRequest = await interceptor.onRequest(finalRequest);
       }
 
-      VoltLog.d('PUT Request: ${finalRequest.url}');
+      VoltLog.logRequest(
+        method: finalRequest.method,
+        url: finalRequest.url.toString(),
+        headers: finalRequest.headers,
+        body: data,
+      );
 
       final effectiveTimeout = timeout ?? Volt.timeout;
       final streamedResponse =
@@ -55,6 +60,12 @@ class PutRequest<T extends BaseApiUrlConfig> {
         response = await interceptor.onResponse(response);
       }
 
+      VoltLog.logResponse(
+        url: finalRequest.url.toString(),
+        statusCode: response.statusCode,
+        body: response.body,
+      );
+
       final resultApi = ResultApi(response: response);
 
       if (!resultApi.isSuccess) {
@@ -63,6 +74,7 @@ class PutRequest<T extends BaseApiUrlConfig> {
 
       return resultApi;
     } catch (e) {
+      VoltLog.e('PUT Request Error: $endpoint', e);
       for (var interceptor in Volt.interceptors) {
         interceptor.onError(e);
       }

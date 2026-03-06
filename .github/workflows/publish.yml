@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: write
-  id-token: write
+  id-token: write   # ← essencial pro OIDC
 
 jobs:
   release:
@@ -30,7 +30,7 @@ jobs:
           else LEVEL="patch"; fi
           
           cider bump $LEVEL
-          VERSION=$(grep 'version:' pubspec.yaml | sed 's/version: //')
+          VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //')
           echo "NEW_VERSION=$VERSION" >> $GITHUB_OUTPUT
           
           git config user.name "github-actions[bot]"
@@ -43,9 +43,19 @@ jobs:
   publish:
     needs: release
     runs-on: ubuntu-latest
+    environment: pub.dev          # ← remova esta linha se não configurou o environment
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with: { ref: 'v${{ needs.release.outputs.new_version }}' }
+
       - uses: subosito/flutter-action@v2
+
+      # ← ESSA É A LINHA MÁGICA (configura OIDC automaticamente)
+      - name: Setup pub.dev credentials (OIDC)
+        uses: flutter-actions/setup-pubdev-credentials@v1
+
       - name: Publish to pub.dev
         run: dart pub publish --force
