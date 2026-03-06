@@ -3,26 +3,26 @@ name: CD - Release & Publish
 on:
   push:
     branches: [ "main" ]
+    tags: [ "v*" ]                  # ← ESSA LINHA É A SOLUÇÃO
 
 permissions:
   contents: write
-  id-token: write   # ← essencial pro OIDC
+  id-token: write
 
 jobs:
   release:
+    # Só roda quando for push na main (bump + tag)
+    if: startsWith(github.ref, 'refs/heads/')
     runs-on: ubuntu-latest
-    outputs:
-      new_version: ${{ steps.versioning.outputs.NEW_VERSION }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+
       - uses: subosito/flutter-action@v2
       - run: dart pub global activate cider
 
-      - name: Version Bump
-        id: versioning
+      - name: Version Bump & Tag
         run: |
-          # O script local já coloca o prefixo no commit!
           MSG=$(git log -1 --pretty=%s)
           
           if [[ "$MSG" == *"feat:"* ]]; then LEVEL="minor";
@@ -31,7 +31,6 @@ jobs:
           
           cider bump $LEVEL
           VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //')
-          echo "NEW_VERSION=$VERSION" >> $GITHUB_OUTPUT
           
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -41,19 +40,18 @@ jobs:
           git push origin main --tags
 
   publish:
-    needs: release
+    # Só roda quando for push de tag (agora refType = tag → pub.dev aceita)
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
-    environment: pub.dev          # ← remova esta linha se não configurou o environment
+    environment: pub.dev                    # ← obrigatório por causa da sua config
     permissions:
       id-token: write
       contents: read
     steps:
-      - uses: actions/checkout@v4
-        with: { ref: 'v${{ needs.release.outputs.new_version }}' }
+      - uses: actions/checkout@v4          # já vem na tag automaticamente
 
       - uses: subosito/flutter-action@v2
 
-      # ← ESSA É A LINHA MÁGICA (configura OIDC automaticamente)
       - name: Setup pub.dev credentials (OIDC)
         uses: flutter-actions/setup-pubdev-credentials@v1
 
