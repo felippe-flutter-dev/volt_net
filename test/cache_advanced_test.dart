@@ -71,6 +71,10 @@ void main() {
         ttl: const Duration(milliseconds: 10),
       );
       expect(cached, isNull);
+
+      final db = await SqlDatabaseHelper().database;
+      final rows = await db.query(SqlDatabaseHelper.cacheTable);
+      expect(rows, isEmpty);
     });
 
     test('CacheManager LRU (maxMemoryItems) coverage', () async {

@@ -95,6 +95,7 @@ void main() {
         queryParameters: params,
         cacheEnabled: true,
         type: CacheType.disk,
+        readCache: true,
       );
 
       expect(cachedResult.bodyAsString, result.bodyAsString);
@@ -113,8 +114,12 @@ void main() {
           await getRequest.getBytes(config, imageUrl, cacheEnabled: true);
       expect(bytes, mockBytes);
 
-      final cachedBytes =
-          await getRequest.getBytes(config, imageUrl, cacheEnabled: true);
+      final cachedBytes = await getRequest.getBytes(
+        config,
+        imageUrl,
+        cacheEnabled: true,
+        readCache: true,
+      );
       expect(cachedBytes, mockBytes);
 
       verify(() => mockClient.get(any(), headers: any(named: 'headers')))

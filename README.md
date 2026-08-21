@@ -1,286 +1,395 @@
-# VoltNet 🚀 — Enterprise Networking for Flutter
+# volt_net
 
 [![pub package](https://img.shields.io/pub/v/volt_net.svg)](https://pub.dev/packages/volt_net)
 [![Coverage Status](https://img.shields.io/badge/coverage-89%20-brightgreen.svg)](https://github.com/felippe-flutter-dev/volt_net)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-### Why VoltNet?
-In complex Flutter apps, network failures are inevitable. VoltNet isn't just an HTTP client; it's a **resilient orchestration layer**. We prevent data loss during offline states and ensure that your JSON parsing never freezes your UI, thanks to native Isolate integration. Built for scale, tested for reliability.
+O **volt_net** é uma camada de orquestração HTTP para aplicações Flutter que precisam de desempenho, resiliência offline, cache híbrido e parsing de JSON fora da thread principal. A biblioteca é agnóstica ao backend e trabalha com APIs REST convencionais.
 
----
+## Principais recursos
 
-## ⚡ Performance Dashboard
+| Recurso | Descrição |
+|---|---|
+| **Cache híbrido** | Cache L1 em RAM e L2 persistente em SQLite, com TTL e remoção física de entradas expiradas. |
+| **Stale-while-revalidate** | Exibe o cache imediatamente e consulta a API em seguida, emitindo o dado atualizado por callback. |
+| **Network-first** | O fluxo padrão de GET consulta a rede; o cache pode ser usado explicitamente como leitura antecipada ou fallback offline. |
+| **Offline Sync** | POST, PUT e DELETE podem ser enfileirados e reenviados quando a conectividade retornar. |
+| **Parsing em isolate** | `getModelResult`, `getListResult` e `postModel` processam JSON fora da thread principal. |
+| **Interceptors** | Interceptação centralizada de requisições, respostas e erros. |
+| **Debounce** | Redução de chamadas repetidas em buscas e ações de alta frequência. |
+| **Resilient Batch** | Execução sequencial de operações com idempotência e rollback local. |
+| **Logging e CURL** | Logs estruturados e comandos CURL para depuração quando `logging` está habilitado. |
 
-| Feature | VoltNet (v2.0+) | Standard Implementation |
-| :--- | :--- | :--- |
-| **UI Fluidity** | **60 FPS** (Heavy Parsing in Isolates) | Potential Jank (Main Thread) |
-| **Offline Mode** | **Native Sync Queue** (SQLite) | Manual Implementation |
-| **JSON Parsing** | **Off-Main-Thread** (Automated) | Main Thread |
-| **Caching** | **Hybrid (L1 RAM / L2 Disk)** | Usually Manual |
-| **Batch Resilience**| **Local Rollback & Idempotency** | Sequential & Risky |
-| **Backend Agnostic**| **Yes** (No special server requirements) | Often requires specific logic |
+## Arquitetura
 
----
-
-## 🏗️ Core Architecture
-
-VoltNet operates as an intelligent middleware between your UI and the Cloud.
-
-### 1. Request Flow (Hybrid Caching & Isolates)
+O fluxo padrão é **network-first**. Quando o modo stale-while-revalidate está habilitado e a chamada permite leitura de cache, a aplicação recebe o valor persistido sem esperar a rede. A consulta online continua imediatamente; quando concluída, a resposta é salva em disco, promovida para L1 e entregue ao callback `onUpdate`.
 
 ```mermaid
 sequenceDiagram
-    participant UI as UI (Main Thread)
-    participant VN as VoltNet Engine
-    participant CH as Hybrid Cache (L1/L2)
-    participant API as Remote API
-    participant ISO as Worker Isolate
+    participant UI as UI Flutter
+    participant VN as VoltNet
+    participant L1 as L1 RAM
+    participant L2 as L2 SQLite
+    participant API as API REST
 
-    UI->>VN: Request (GET/POST)
-    VN->>CH: Check Cache (if enabled)
-    
-    alt Cache Hit (Valid TTL)
-        CH-->>UI: Return Model Instantly (No Wait)
-    else Cache Miss/Expired
-        VN->>API: Execute Network Call
-        alt Success
-            API->>ISO: Off-thread Parsing
-            ISO-->>CH: Update L1 & L2
-            ISO-->>UI: Return ResultModel<T>
-        else Network Failure & OfflineSync On
-            VN->>CH: Save to Sync Queue (SQLite)
-            VN-->>UI: Return Result(isPending: true)
-        end
+    UI->>VN: GET com cacheEnabled/readCache
+    VN->>L1: Procura entrada válida
+    alt Cache disponível + staleWhileRevalidate
+        L1-->>UI: Entrega cache imediatamente
+        VN-)API: Revalidação em segundo plano
+    else Cache em L2
+        VN->>L2: Procura entrada válida
+        L2-->>UI: Entrega cache imediatamente
+        VN-)API: Revalidação em segundo plano
+    else Cache ausente ou inválido
+        VN->>API: Requisição online
     end
+
+    API-->>VN: Dados atualizados
+    VN->>L2: Persiste resposta
+    VN->>L1: Promove resposta para RAM
+    VN-->>UI: onUpdate(dados novos)
 ```
 
-### 2. Resilient Batch (Local Consistency)
-When performing multiple operations, VoltNet ensures that your **local state** remains consistent even if the network fails midway.
+### Expiração e limpeza do cache
+
+O TTL é aplicado no momento da leitura. Quando uma entrada persistida ultrapassa o TTL informado, ela deixa de ser retornada e o registro correspondente é removido do SQLite. O cache em memória também remove a entrada expirada da L1.
 
 ```mermaid
-graph TD
-    A[Start Batch] --> B{Step 1 Success?}
-    B -- Yes --> C{Step 2 Success?}
-    C -- Yes --> D[Batch Complete]
-    B -- No --> E[Trigger Local Rollback]
-    C -- No --> E
-    E --> F[UI Stays Consistent]
+flowchart TD
+    A[Entrada no cache] --> B{TTL informado?}
+    B -- Não --> C[Entrada disponível conforme a política da chamada]
+    B -- Sim --> D{TTL expirou?}
+    D -- Não --> E[Retorna entrada]
+    D -- Sim --> F[Remove da L1/L2]
+    F --> G[Consulta rede ou usa fallback offline]
 ```
 
----
+### Stale-while-revalidate
 
-## 🚀 Quick Start & Initialization
+Ative a política global antes de `runApp`. A configuração não bloqueia a inicialização da aplicação e passa a valer para chamadas que usam `readCache: true`.
 
-Initialization is the foundation. In your `main.dart`, initialize VoltNet with full control over the engine's behavior.
+```mermaid
+stateDiagram-v2
+    [*] --> Cache
+    Cache --> Tela: Exibe imediatamente
+    Cache --> Rede: staleWhileRevalidate = true
+    Rede --> AtualizaCache: Resposta 2xx
+    AtualizaCache --> L1: Promoção para RAM
+    AtualizaCache --> TelaAtualizada: onUpdate
+    Rede --> Fallback: Falha de rede
+    Fallback --> Tela: Usa cache expirado, se disponível
+```
 
-### 1. The Global Entry Point
+## Configuração no `main.dart`
+
+A inicialização deve ocorrer depois de `WidgetsFlutterBinding.ensureInitialized()` e antes de `runApp`.
 
 ```dart
-void main() async {
+import 'package:flutter/material.dart';
+import 'package:volt_net/volt_net.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   await Volt.initialize(
-    databaseName: 'enterprise_vault.db', // SQLite filename (Optional)
-    maxMemoryItems: 200,                // L1/RAM Cache limit (Optional)
-    enableSync: true,                   // Activate Offline Sync Engine (Default: true)
-    defaultTimeout: Duration(seconds: 20), // Global timeout for all requests
-    logging: true,                      // Enable built-in CURL & Request logger
+    databaseName: 'volt_net_cache.db',
+    maxMemoryItems: 200,
+    enableSync: true,
+    defaultTimeout: const Duration(seconds: 20),
+    logging: true,
+    staleWhileRevalidate: true,
   );
 
-  runApp(MyApp());
+  runApp(const MyApp());
 }
 ```
 
-### 2. Centralizing Config (`BaseApiUrlConfig`)
-VoltNet doesn't use loose Strings. You define a configuration class to manage URLs and Authentication.
+Os parâmetros principais são `databaseName`, `maxMemoryItems`, `enableSync`, `defaultTimeout`, `logging` e `staleWhileRevalidate`. Para receber o cache imediatamente, a chamada também precisa usar `cacheEnabled: true`, `type` e `readCache: true`.
+
+## Configuração de URL e autenticação
+
+A aplicação deve fornecer uma implementação de `BaseApiUrlConfig` para centralizar URL base, headers e token.
 
 ```dart
-class MyEnterpriseConfig extends BaseApiUrlConfig {
+class ApiConfig extends BaseApiUrlConfig {
   @override
-  String resolveBaseUrl() => 'https://api.mycompany.com/v1';
+  String resolveBaseUrl() => 'https://api.exemplo.com/v1';
 
   @override
   Future<Map<String, String>> getHeader() async => {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    'X-App-Version': '2.0.0',
-  };
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      };
 
   @override
-  Future<String> getToken() async => 'Bearer secret_token_123';
+  Future<String> getToken() async {
+    // Leia o token do armazenamento seguro da aplicação.
+    return 'Bearer token-da-aplicacao';
+  }
 }
 ```
 
----
+## GET
 
-## 🛠️ Essential Utilities (Show, Don't Tell)
+### GET network-first
 
-### 📊 Built-in Logging & CURL
-VoltNet includes a professional logging system integrated with `DebugUtils`. When `logging: true` is set during initialization, every request generates:
-- A structured Request/Response visual block.
-- A ready-to-use **CURL command** for terminal or Postman debugging.
+O GET padrão consulta a rede e salva respostas bem-sucedidas quando o cache está habilitado.
 
----
-
-### 📡 GET Operations
-VoltNet separates **"What I received"** (ResultApi) from **"What I processed"** (Model).
-
-#### Fetching a Single Model (Recommended)
 ```dart
-final getRequest = GetRequest<MyEnterpriseConfig>();
+final request = GetRequest<ApiConfig>();
+final config = ApiConfig();
 
-ResultModel<User> result = await getRequest.getModelResult(
-  MyEnterpriseConfig(),
-  '/profile',
-  User.fromJson, // Parse function (executed in Isolate)
+final result = await request.get(
+  config,
+  '/users',
   cacheEnabled: true,
-  type: CacheType.both, // Uses RAM and Disk simultaneously
-  ttl: Duration(minutes: 30),
+  type: CacheType.both,
+  ttl: const Duration(minutes: 5),
 );
 
 if (result.isSuccess) {
-  print("User: ${result.model?.name}");
-} else if (result.hasError) {
-  print("Error: ${result.errorMessage}");
+  print(result.jsonBody);
 }
 ```
 
-#### Search with Native Debounce
-Prevents server overload and UI flicker by cancelling ongoing requests if the user keeps typing.
+### GET com cache imediato e atualização da UI
+
+Para telas como home, feed ou dashboard, use `readCache: true`, `staleWhileRevalidate: true` e `onUpdate`. A primeira resposta pode ser o cache; a resposta online será emitida depois sem bloquear a primeira renderização.
 
 ```dart
-getRequest.getWithDebounce(
-  config,
-  '/search',
-  queryParameters: {'q': 'enterprise'},
-  delay: Duration(milliseconds: 400),
-);
+class FeedPageState extends State<FeedPage> {
+  final request = GetRequest<ApiConfig>();
+  final config = ApiConfig();
+  ResultApi? feed;
+
+  Future<void> loadFeed() async {
+    final immediate = await request.get(
+      config,
+      '/feed',
+      cacheEnabled: true,
+      type: CacheType.both,
+      readCache: true,
+      ttl: const Duration(minutes: 5),
+      staleWhileRevalidate: true,
+      onUpdate: (fresh) {
+        if (!mounted) return;
+        setState(() => feed = fresh);
+      },
+    );
+
+    if (!mounted) return;
+    setState(() => feed = immediate);
+  }
+}
 ```
 
----
+Quando o modo global estiver ativo, `staleWhileRevalidate` pode ser omitido na chamada. O parâmetro por requisição permite substituir a configuração global quando necessário.
 
-### 📤 POST, PUT & DELETE (Resilience First)
-
-#### Standard POST with Offline Sync
-If the internet drops here, VoltNet saves it to SQLite and sends it when the network returns.
+### GET com parsing em isolate
 
 ```dart
-final postRequest = PostRequest<MyEnterpriseConfig>();
-
-final result = await postRequest.postModel(
+final result = await request.getModelResult<User>(
   config,
-  '/posts',
-  Post.fromJson,
-  data: {'title': 'New Content', 'body': '...'},
-  offlineSync: true, // Ensures data eventually reaches the server
+  '/profile',
+  User.fromJson,
+  cacheEnabled: true,
+  type: CacheType.both,
+  ttl: const Duration(minutes: 5),
+);
+
+if (result.isSuccess && result.model != null) {
+  print(result.model!.name);
+}
+```
+
+Para listas, use `getListResult<T>` com o mesmo padrão de configuração.
+
+## POST
+
+POST suporta JSON, multipart, cancelamento e fila offline.
+
+```dart
+final postRequest = PostRequest<ApiConfig>();
+
+final result = await postRequest.post(
+  config,
+  endpoint: '/posts',
+  data: {
+    'title': 'Novo post',
+    'body': 'Conteúdo do post',
+  },
+  offlineSync: true,
 );
 
 if (result.isPending) {
-  // User can keep using the app, data will be sent in the background!
+  print('POST enfileirado para sincronização posterior.');
 }
 ```
 
-#### 🛡️ Resilient Batching (Enterprise Only)
-Ideal for flows where you need to create multiple things in sequence (e.g., Address -> Order -> Clear Cart).
+Com parsing tipado:
 
 ```dart
-try {
-  final results = await postRequest.resilientBatch(
-    [
-      ({extraHeaders}) => postRequest.post(config, endpoint: '/step1', extraHeaders: extraHeaders),
-      ({extraHeaders}) => postRequest.post(config, endpoint: '/step2', extraHeaders: extraHeaders),
-    ],
-    idempotencyKey: 'transaction_id_999', // Prevents duplicates on Retry
-    rollbackOnFailure: true,
-    onRollback: (successfulSteps) async {
-      // Logic if step 2 fails: roll back local state
-      // e.g., Remove locally added item from step 1
-    },
-  );
-} catch (e) {
-  // Capture specific step error
-}
-```
-
-#### 📂 Multipart (File Uploads)
-Use `VoltFile` for file uploads that respect the offline queue.
-
-```dart
-await postRequest.post(
+final result = await postRequest.postModel<Post>(
   config,
-  endpoint: '/upload',
-  isMultipart: true,
-  data: {
-    'userId': 123,
-    'avatar': VoltFile(path: '/path/to/image.jpg', field: 'file'),
-  },
+  '/posts',
+  Post.fromJson,
+  data: {'title': 'Novo post'},
+  offlineSync: true,
 );
 ```
 
----
+Para upload, envie `isMultipart: true` e use `VoltFile` nos campos correspondentes.
 
-## 🧠 Interceptors: The Brain
-Use interceptors for Logging, Global Refresh Token, or Dynamic Header Injection.
+## PUT / UPDATE
+
+O pacote expõe `PutRequest.put`. Ele representa a operação de **update** completo de um recurso REST. Não existe um método chamado `update`; quando a aplicação usa esse conceito, deve chamar `put`.
 
 ```dart
-class EnterpriseInterceptor extends VoltInterceptor {
+final putRequest = PutRequest<ApiConfig>();
+
+final result = await putRequest.put(
+  config,
+  endpoint: '/users/42',
+  data: {
+    'name': 'Nome atualizado',
+    'email': 'novo@email.com',
+  },
+  offlineSync: true,
+);
+```
+
+## PATCH
+
+A versão atual do `volt_net` não expõe uma classe ou método `PatchRequest`. Portanto, não documentamos um snippet que pareça suportado pela API atual. Para alterações completas, use `PutRequest.put`. O suporte nativo a PATCH está previsto no roadmap.
+
+Quando o backend exigir PATCH, a implementação deverá incluir método HTTP PATCH, suporte correspondente na fila offline e testes específicos antes de ser considerada parte da API pública.
+
+## DELETE
+
+DELETE também pode ser enfileirado para sincronização quando a aplicação estiver offline.
+
+```dart
+final deleteRequest = DeleteRequest<ApiConfig>();
+
+final result = await deleteRequest.delete(
+  config,
+  endpoint: '/posts/42',
+  offlineSync: true,
+);
+
+if (result.isPending) {
+  print('DELETE enfileirado para sincronização posterior.');
+}
+```
+
+## Interceptors
+
+Interceptors são úteis para refresh de token, cabeçalhos dinâmicos, telemetria e tratamento centralizado de erros.
+
+```dart
+class ApiInterceptor extends VoltInterceptor {
   @override
-  FutureOr<http.BaseRequest> onRequest(http.BaseRequest request) {
-    // Global logic before the request leaves the app
+  FutureOr<http.BaseRequest> onRequest(http.BaseRequest request) async {
+    request.headers['X-App-Version'] = '1.0.0';
     return request;
   }
 
   @override
-  void onError(dynamic error) {
-    // Send to centralized Sentry/Crashlytics
+  FutureOr<http.Response> onResponse(http.Response response) async {
+    return response;
   }
+
+  @override
+  void onError(dynamic error) {
+    // Encaminhe o erro para o sistema de observabilidade.
+  }
+}
+
+void registerInterceptors() {
+  Volt.addInterceptor(ApiInterceptor());
 }
 ```
 
----
-
-## 💾 Custom SQL Persistence (`SqlModel`)
-Need to persist data that didn't come from the API? Use VoltNet's engine.
+## Debounce e operações em lote
 
 ```dart
-class MyLocalData extends SqlModel {
+final result = await request.getWithDebounce(
+  config,
+  '/search',
+  queryParameters: {'q': 'flutter'},
+  delay: const Duration(milliseconds: 400),
+);
+```
+
+Para operações dependentes, use `resilientBatch` com idempotência e rollback local.
+
+```dart
+final results = await postRequest.resilientBatch(
+  [
+    ({extraHeaders}) => postRequest.post(
+          config,
+          endpoint: '/addresses',
+          data: {'city': 'São Paulo'},
+          extraHeaders: extraHeaders,
+        ),
+    ({extraHeaders}) => postRequest.post(
+          config,
+          endpoint: '/orders',
+          data: {'total': 100},
+          extraHeaders: extraHeaders,
+        ),
+  ],
+  idempotencyKey: 'checkout-123',
+  rollbackOnFailure: true,
+  onRollback: (successfulSteps) async {
+    // Rever o estado local quando uma etapa posterior falhar.
+  },
+);
+```
+
+## Persistência SQL customizada
+
+```dart
+class LocalMessage extends SqlModel {
   final String content;
-  MyLocalData(this.content);
+
+  LocalMessage(this.content);
 
   @override
-  String get tableName => 'local_storage';
+  String get tableName => 'local_messages';
 
   @override
-  Map<String, String> get tableSchema => {'id': 'INTEGER PRIMARY KEY', 'content': 'TEXT'};
+  Map<String, String> get tableSchema => {
+        'id': 'INTEGER PRIMARY KEY AUTOINCREMENT',
+        'content': 'TEXT',
+      };
 
   @override
   Map<String, dynamic> toSqlMap() => {'content': content};
 }
 
-// To save:
-await CacheManager().saveModel(MyLocalData('Some text'));
+await CacheManager().saveModel(LocalMessage('Mensagem local'));
 ```
 
----
+## Roadmap
 
-## 💡 Troubleshooting & FAQ
+O roadmap detalhado está em [`ROADMAP.md`](ROADMAP.md). A versão resumida é:
 
-**Q: Does VoltNet need special support on my backend?**  
-**R:** No. VoltNet is agnostic. It works with any standard REST API. Features like `Idempotency-Key` are injected into the Header for your server to (optionally) handle, but the framework works perfectly in legacy systems without it.
+| Status | Entrega |
+|---|---|
+| Concluído | Cache híbrido L1/L2, TTL, limpeza de entradas expiradas e network-first. |
+| Concluído | Stale-while-revalidate configurável, promoção automática para L1 e callback `onUpdate`. |
+| Concluído | Logging, CURL, interceptors, parsing em isolate, offline sync e resilient batch. |
+| Planejado | API nativa de PATCH com suporte à fila offline. |
+| Planejado | Persistência alternativa para Web sem SQLite. |
+| Planejado | Suporte GraphQL opcional. |
 
-**Q: What happens if the network drops during a Resilient Batch?**  
-**R:** VoltNet stops execution immediately and triggers the `onRollback` callback. This ensures your local state (UI/Local DB) doesn't become inconsistent with what was successfully sent up to that point.
+## Licença
 
-**Q: How do I know when the Offline queue finished syncing?**  
-**R:** Use the `VoltSyncListener` widget or listen to the `SyncQueueManager().onQueueFinished` stream.
+Desenvolvido por **Felippe Pinheiro de Almeida** sob a licença MIT.
 
----
-
-## 🗺️ Roadmap
-- [x] **v2.0**: Resilient Batching & Hybrid Cache.
-- [x] **v2.1**: Enhanced Interceptors & Global Error Types.
-- [ ] **v2.2**: Web Support (Non-SQLite persistence fallback).
-- [ ] **v2.5**: Automatic GraphQL Support.
-
----
-Developed with ❤️ for Enterprise Flutter Apps by **Felippe Pinheiro de Almeida**.
+- [Pub.dev](https://pub.dev/packages/volt_net)
+- [GitHub](https://github.com/felippe-flutter-dev/volt_net)
+- [Changelog](CHANGELOG.md)
+- [Roadmap](ROADMAP.md)

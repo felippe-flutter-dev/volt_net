@@ -1,4 +1,5 @@
 import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
@@ -103,7 +104,9 @@ class GetRequest<T extends BaseApiUrlConfig> {
 
   /// Executes a standard HTTP GET request.
   ///
-  /// [cacheEnabled] If true, the request will use the local cache system.
+  /// [cacheEnabled] If true, the request will save successful responses and use the cache as an offline fallback. A valid cache is read before the network only when [readCache] is true.
+  /// [staleWhileRevalidate] Refreshes the network after serving a cache hit.
+  /// [onUpdate] Receives the fresh network result after a cache hit.
   /// [cancelPrevious] If true, any ongoing request for the same URL will be cancelled.
   ///
   /// Example:
@@ -116,7 +119,9 @@ class GetRequest<T extends BaseApiUrlConfig> {
     Map<String, dynamic>? queryParameters,
     CacheType? type,
     bool cacheEnabled = false,
-    bool readCache = true,
+    bool readCache = false,
+    bool? staleWhileRevalidate,
+    FutureOr<void> Function(ResultApi result)? onUpdate,
     Duration? ttl,
     Map<String, String>? personalizedHeader,
     bool cancelPrevious = false,
@@ -142,6 +147,8 @@ class GetRequest<T extends BaseApiUrlConfig> {
       type: type,
       cacheEnabled: cacheEnabled,
       readCache: readCache,
+      staleWhileRevalidate: staleWhileRevalidate ?? Volt.staleWhileRevalidate,
+      onUpdate: onUpdate,
       ttl: ttl,
       personalizedHeader: personalizedHeader,
       cacheGroup: cacheGroup,
@@ -170,12 +177,16 @@ class GetRequest<T extends BaseApiUrlConfig> {
     Map<String, dynamic>? queryParameters,
     CacheType? type,
     bool cacheEnabled = false,
-    bool readCache = true,
+    bool readCache = false,
+    bool staleWhileRevalidate = false,
+    FutureOr<void> Function(ResultApi result)? onUpdate,
     Duration? ttl,
     Map<String, String>? personalizedHeader,
     String? cacheGroup,
     Duration? timeout,
   }) async {
+    var servedCachedResponse = false;
+
     try {
       final baseUrl = apiConfig.resolveBaseUrl();
       final token = await apiConfig.getToken();
@@ -196,12 +207,15 @@ class GetRequest<T extends BaseApiUrlConfig> {
         );
         if (cached != null) {
           VoltLog.d('GET Request (Cache Hit): $fullUrl');
+          servedCachedResponse = true;
           if (!completer.isCompleted) completer.complete(cached);
-          return;
+
+          if (!staleWhileRevalidate) return;
+          VoltLog.d('GET Request (SWR): refreshing $fullUrl');
         }
       }
 
-      if (completer.isCompleted) return;
+      if (completer.isCompleted && !servedCachedResponse) return;
 
       final headers = personalizedHeader ?? await apiConfig.getHeader();
       http.BaseRequest request = http.Request('GET', uri)
@@ -249,6 +263,15 @@ class GetRequest<T extends BaseApiUrlConfig> {
       }
 
       if (!completer.isCompleted) completer.complete(resultApi);
+
+      if (servedCachedResponse && onUpdate != null) {
+        try {
+          await onUpdate(resultApi);
+        } catch (callbackError) {
+          VoltLog.e(
+              'GET Request update callback error: $endpoint', callbackError);
+        }
+      }
     } catch (e) {
       VoltLog.e('GET Request Error: $endpoint', e);
       for (var interceptor in Volt.interceptors) {
@@ -453,17 +476,20 @@ class GetRequest<T extends BaseApiUrlConfig> {
     T apiConfig,
     String url, {
     bool cacheEnabled = true,
+    bool readCache = false,
+    Duration? ttl,
     Map<String, String>? personalizedHeader,
   }) async {
     try {
       final uri = Uri.parse(url);
       final token = await apiConfig.getToken();
 
-      if (cacheEnabled) {
+      if (cacheEnabled && readCache) {
         final cached = await requestCache.get(
           type: CacheType.disk,
           token: token,
           endpoint: url,
+          ttl: ttl,
         );
         if (cached != null && cached.response != null) {
           return cached.response!.bodyBytes;

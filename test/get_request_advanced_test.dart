@@ -59,6 +59,68 @@ void main() {
       expect(res.isSuccess, true);
     });
 
+    test('Network-first refreshes data even when a valid cache exists',
+        () async {
+      var callCount = 0;
+      when(() => mockClient.send(any())).thenAnswer((_) async {
+        callCount++;
+        return http.StreamedResponse(
+          Stream.fromIterable([utf8.encode('{"version":$callCount}')]),
+          200,
+        );
+      });
+
+      final first = await getRequest.get(
+        apiConfig,
+        '/refresh',
+        cacheEnabled: true,
+        type: CacheType.both,
+        ttl: const Duration(hours: 1),
+      );
+      final second = await getRequest.get(
+        apiConfig,
+        '/refresh',
+        cacheEnabled: true,
+        type: CacheType.both,
+        ttl: const Duration(hours: 1),
+      );
+
+      expect(first.jsonBody['version'], 1);
+      expect(second.jsonBody['version'], 2);
+      expect(callCount, 2);
+    });
+
+    test('Stale-while-revalidate returns cache and emits network update',
+        () async {
+      final cacheManager = CacheManager();
+      final cached = ResultApi(response: http.Response('{"version":1}', 200));
+      await cacheManager.save(
+        type: CacheType.both,
+        token: 'test_token',
+        endpoint: 'https://api.test.com/swr',
+        data: cached,
+      );
+
+      final update = Completer<ResultApi>();
+      when(() => mockClient.send(any())).thenAnswer((_) async =>
+          http.StreamedResponse(
+              Stream.fromIterable([utf8.encode('{"version":2}')]), 200));
+
+      final immediate = await getRequest.get(
+        apiConfig,
+        '/swr',
+        cacheEnabled: true,
+        type: CacheType.both,
+        readCache: true,
+        staleWhileRevalidate: true,
+        onUpdate: (result) => update.complete(result),
+      );
+
+      expect(immediate.jsonBody['version'], 1);
+      final refreshed = await update.future.timeout(const Duration(seconds: 1));
+      expect(refreshed.jsonBody['version'], 2);
+    });
+
     test('Network error fallback to EXPIRED cache', () async {
       final cacheManager = CacheManager();
       final resInitial =
@@ -153,8 +215,9 @@ void main() {
           endpoint: 'https://test.com/file',
           data: resInitial);
 
-      final bytes = await getRequest
-          .getBytes(apiConfig, 'https://test.com/file', cacheEnabled: true);
+      final bytes = await getRequest.getBytes(
+          apiConfig, 'https://test.com/file',
+          cacheEnabled: true, readCache: true);
       expect(utf8.decode(bytes), 'hello');
     });
   });

@@ -75,7 +75,13 @@ class CacheManager {
       }
     }
 
-    // 2. Try Disk (L2)
+    // 2. Try Disk (L2) only when disk caching was requested.
+    // A memory-only cache must never resurrect an entry persisted by a
+    // previous request or process.
+    if (type != CacheType.disk && type != CacheType.both) {
+      return null;
+    }
+
     final map = await _dbHelper.getCache(key);
 
     if (map != null) {

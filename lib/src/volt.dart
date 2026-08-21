@@ -18,6 +18,12 @@ class Volt {
   /// When true, it uses [DebugUtils] to print requests, responses, and CURLs.
   static bool logging = false;
 
+  /// Enables stale-while-revalidate for cache reads.
+  ///
+  /// When enabled, a valid cached response can be delivered immediately while
+  /// a network request refreshes the cache in the background.
+  static bool staleWhileRevalidate = false;
+
   /// Returns an unmodifiable list of all registered interceptors.
   static List<VoltInterceptor> get interceptors =>
       List.unmodifiable(_interceptors);
@@ -50,6 +56,8 @@ class Volt {
   /// [enableSync] Whether to activate the background offline synchronization engine.
   /// [defaultTimeout] Sets the global timeout for all network requests.
   /// [logging] Enables the built-in logging system for debugging.
+  /// [staleWhileRevalidate] Delivers valid cache immediately and refreshes it
+  /// from the network in the background.
   ///
   /// Example:
   /// ```dart
@@ -65,8 +73,10 @@ class Volt {
     bool enableSync = true,
     Duration? defaultTimeout,
     bool logging = false,
+    bool staleWhileRevalidate = false,
   }) async {
     Volt.logging = logging;
+    Volt.staleWhileRevalidate = staleWhileRevalidate;
     VoltLog.i('Initializing VoltNet...');
 
     if (databaseName != null) {
